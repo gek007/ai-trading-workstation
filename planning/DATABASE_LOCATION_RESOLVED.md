@@ -103,15 +103,15 @@ docker run -v finally-data:/app/backend/db -p 8000:8000 --env-file .env finally
 
 This resolution eliminates **Critical Blocker #2**. The backend agent can now proceed with database implementation without ambiguity.
 
-**Remaining Critical Blockers:**
+**Critical Blocker Status (Final):**
 1. ✅ API Contracts (RESOLVED - see `API_CONTRACTS.md`)
 2. ✅ Database Location (RESOLVED - this document)
-3. ❌ SSE Streaming Format (RESOLVED in `API_CONTRACTS.md`)
-4. ❌ Trade Validation Rules (RESOLVED in `API_CONTRACTS.md`)
-5. ❌ Fractional Share Precision (RESOLVED in `API_CONTRACTS.md`)
-6. ❌ Main Chart Data Source (still needed)
-7. ❌ Portfolio Snapshot Retention (still needed)
+3. ✅ SSE Streaming Format (RESOLVED in `API_CONTRACTS.md`)
+4. ✅ Trade Validation Rules (RESOLVED in `API_CONTRACTS.md`)
+5. ✅ Fractional Share Precision (RESOLVED in `API_CONTRACTS.md`)
+6. ✅ Main Chart Data Source (RESOLVED in `MAIN_CHART_DATA_SOURCE.md`)
+7. ✅ Portfolio Snapshot Retention (RESOLVED in `PORTFOLIO_SNAPSHOTS_REMOVED.md`)
 
-**Status:** 5/7 critical blockers resolved ✅
+**Status:** 7/7 critical blockers resolved ✅
 
-Implementation can proceed on most endpoints. Remaining blockers (#6, #7) are for specific features (main chart and portfolio snapshots) and can be addressed separately.
+Implementation can proceed for full v1 scope.

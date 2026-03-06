@@ -44,6 +44,7 @@ All 7 critical blockers from the Implementation Readiness Review have been resol
 #### Core Features
 - ✅ Real-time price streaming via SSE
 - ✅ Market data simulator (GBM with correlated moves)
+- ✅ Massive API market data source (enabled when `MASSIVE_API_KEY` is set)
 - ✅ Buy/sell trading (market orders, instant fill)
 - ✅ Portfolio tracking (positions, P&L, cash balance)
 - ✅ Watchlist management (add/remove tickers)
@@ -80,7 +81,6 @@ All 7 critical blockers from the Implementation Readiness Review have been resol
 - All critical portfolio info still available (current value, P&L, positions)
 
 #### Features Deferred to v2
-- 📅 Real market data integration (Massive API)
 - 📅 Historical portfolio charts
 - 📅 Trade confirmation dialogs
 
@@ -323,7 +323,6 @@ open http://localhost:8000
 
 ### Could Have (v2)
 - 📅 Historical P&L chart
-- 📅 Real market data
 - 📅 Trade confirmations
 - 📅 Advanced charting features
 

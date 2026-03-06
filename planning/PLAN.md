@@ -67,7 +67,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 - **Database**: SQLite, single file at `backend/db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
 - **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
-- **Market data**: Built-in simulator (GBM) for v1; real market data is deferred to v2
+- **Market data**: Built-in simulator (GBM) by default in v1; Massive API polling is also supported in v1 when `MASSIVE_API_KEY` is set
 
 ### Why These Choices
 
@@ -127,13 +127,17 @@ OPENROUTER_API_KEY=your-openrouter-api-key-here
 # Optional: Set to "true" for deterministic mock LLM responses (testing)
 LLM_MOCK=false
 
+# Optional: Massive (Polygon) API key; when set, backend uses Massive polling instead of simulator
+MASSIVE_API_KEY=
+
 # Optional: Seed for deterministic simulator price sequence (testing)
 MARKET_SIM_SEED=
 ```
 
 ### Behavior
 
-- Backend uses the built-in market simulator for market data in v1
+- Backend uses built-in simulator by default for market data in v1
+- If `MASSIVE_API_KEY` is set → backend uses Massive polling as market data source in v1
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses (for E2E tests)
 - If `MARKET_SIM_SEED` is set → simulator uses deterministic seeded randomness for reproducible price sequences
 - The backend reads `.env` from the project root (mounted into the container or read via docker `--env-file`)
@@ -144,7 +148,11 @@ MARKET_SIM_SEED=
 
 ### V1 Implementation
 
-The backend uses a built-in simulator in v1. Downstream code (SSE streaming, price cache, frontend) remains source-agnostic so a real data source can be added in v2 without changing consumer contracts.
+The backend supports two market data sources in v1:
+- Built-in simulator (default)
+- Massive API polling (enabled when `MASSIVE_API_KEY` is set)
+
+Downstream code (SSE streaming, price cache, frontend) remains source-agnostic via a shared market data interface.
 
 ### Simulator (Default)
 
@@ -157,7 +165,7 @@ The backend uses a built-in simulator in v1. Downstream code (SSE streaming, pri
 
 ### Shared Price Cache
 
-- A single simulator background task writes to an in-memory price cache
+- A single market data background task writes to an in-memory price cache (simulator loop or Massive poller)
 - The cache holds the latest price, previous price, and timestamp for each ticker
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
@@ -167,8 +175,10 @@ The backend uses a built-in simulator in v1. Downstream code (SSE streaming, pri
 - Endpoint: `GET /api/stream/prices`
 - Long-lived SSE connection; client uses native `EventSource` API
 - Server pushes price updates for all tickers known to the system at a regular cadence (~500ms) — in the single-user model this is equivalent to the user's watchlist
-- Each SSE event contains ticker, price, previous price, timestamp, and change direction
+- Each SSE event contains an array of ticker updates (`tickers: PriceUpdate[]`) with `ticker`, `price`, `previous_price`, `change`, `change_percent`, `direction`, and `timestamp`
 - Client handles reconnection automatically (EventSource has built-in retry)
+- Wire format and schema are defined only in `planning/API_CONTRACTS.md` section 1.1
+- If any conflict exists between planning docs, `planning/API_CONTRACTS.md` is the source of truth and wins
 
 ---
 
@@ -411,7 +421,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 ### Unit Tests (within `frontend/` and `backend/`)
 
 **Backend (pytest)**:
-- Market data: simulator generates valid prices, GBM math is correct, deterministic seeded mode works for test runs
+- Market data: simulator generates valid prices, GBM math is correct, deterministic seeded mode works for test runs, Massive polling path is covered with mocks
 - Portfolio: trade execution logic, P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss)
 - LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow
 - API routes: correct status codes, response shapes, error handling
