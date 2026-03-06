@@ -1,6 +1,13 @@
 # PLAN.md Implementation Readiness Review
 
-**Status**: ⚠️ **NOT READY FOR IMPLEMENTATION** - Critical gaps must be addressed before agents can begin work.
+**Status**: ✅ **SUPERSEDED / RESOLVED** - This review is historical. Blockers were resolved in follow-up documents.
+
+**Superseded by:**
+- `planning/API_CONTRACTS.md`
+- `planning/DATABASE_LOCATION_RESOLVED.md`
+- `planning/MAIN_CHART_DATA_SOURCE.md`
+- `planning/PORTFOLIO_SNAPSHOTS_REMOVED.md`
+- `planning/IMPLEMENTATION_READY_SUMMARY.md`
 
 ---
 
@@ -467,22 +474,22 @@ These simplifications eliminate blockers #7, #13, and reduce overall complexity.
 
 ---
 
-## ✅ READINESS CHECKLIST
+## ✅ READINESS CHECKLIST (Historical)
 
-Before agents start implementation, ensure:
+This checklist has been completed via the superseding documents listed above.
 
-- [ ] API contracts section added with all request/response schemas
-- [ ] Database location decision made and documented
-- [ ] SSE streaming format specified with examples
-- [ ] Trade validation rules defined (quantity, ticker, price)
-- [ ] Main chart data source specified (API endpoint or SSE)
-- [ ] Simulator seed prices and parameters defined
-- [ ] Error response format standardized
-- [ ] LLM conversation history limit specified
-- [ ] LLM mock response schema defined
-- [ ] Portfolio snapshot retention policy specified
+- [x] API contracts section added with all request/response schemas
+- [x] Database location decision made and documented
+- [x] SSE streaming format specified with examples
+- [x] Trade validation rules defined (quantity, ticker, price)
+- [x] Main chart data source specified (API endpoint or SSE)
+- [x] Simulator seed prices and parameters defined
+- [x] Error response format standardized
+- [x] LLM conversation history limit specified
+- [x] LLM mock response schema defined
+- [x] Portfolio snapshot retention policy specified
 
-**Current Status**: 0/10 complete - **NOT READY**
+**Current Status**: 10/10 complete - **RESOLVED (see superseding docs)**
 
 ---
 

@@ -362,70 +362,6 @@ interface ExecutedTrade {
 - Creates entry in `trades` table
 - Updates or creates entry in `positions` table
 - Updates `cash_balance` in `users_profile` table
-- Creates entry in `portfolio_snapshots` table (for P&L chart)
-
----
-
-### 2.3 Get Portfolio History
-
-**Endpoint:** `GET /api/portfolio/history`
-
-**Description:** Get portfolio value snapshots over time for P&L chart.
-
-**Query Parameters:**
-- `limit` (optional): Number of recent snapshots to return (default: 100, max: 1000)
-- `since` (optional): ISO 8601 timestamp - only return snapshots after this time
-
-**Request Examples:**
-```
-GET /api/portfolio/history
-GET /api/portfolio/history?limit=500
-GET /api/portfolio/history?since=2025-01-15T00:00:00Z
-```
-
-**Response (200 OK):**
-```typescript
-interface PortfolioHistoryResponse {
-  snapshots: PortfolioSnapshot[];
-}
-
-interface PortfolioSnapshot {
-  id: UUID;              // Snapshot ID
-  total_value: Price;    // Total portfolio value at this point (2 decimal places)
-  recorded_at: Timestamp;  // When snapshot was recorded
-}
-```
-
-**Example Response:**
-```json
-{
-  "snapshots": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "total_value": 15000.00,
-      "recorded_at": "2025-01-15T10:00:00.000Z"
-    },
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440001",
-      "total_value": 15050.25,
-      "recorded_at": "2025-01-15T10:00:30.000Z"
-    },
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440002",
-      "total_value": 15100.50,
-      "recorded_at": "2025-01-15T10:01:00.000Z"
-    }
-  ]
-}
-```
-
-**Sorting:** Snapshots are returned in ascending order by `recorded_at` (oldest first).
-
-**Error Responses:**
-- `400 INVALID_REQUEST`: Invalid query parameters
-- `500 INTERNAL_ERROR`: Database query failed
-
-**Note:** Snapshots are recorded every 30 seconds by a background task, and immediately after each trade execution.
 
 ---
 
@@ -546,7 +482,7 @@ interface AddToWatchlistResponse {
 **Side Effects:**
 - Creates entry in `watchlist` table
 - Ticker immediately starts appearing in SSE price updates
-- Simulator/Massive API starts polling for this ticker
+- Simulator starts generating/streaming updates for this ticker
 
 ---
 
@@ -596,7 +532,7 @@ interface RemoveFromWatchlistResponse {
 **Side Effects:**
 - Deletes entry from `watchlist` table
 - Ticker stops appearing in SSE price updates
-- Simulator/Massive API stops polling for this ticker
+- Simulator stops tracking this ticker for streaming updates
 - **Note:** Positions in this ticker are NOT affected (user can still hold shares)
 
 ---
@@ -867,7 +803,6 @@ interface HealthResponse {
 ### Pagination
 
 **No pagination for v1:**
-- `/api/portfolio/history`: Returns all snapshots (query with `limit` or `since` to reduce)
 - `/api/watchlist`: Returns all tickers (typically 10-20 items)
 - `/api/portfolio`: Returns all positions (typically 5-10 items)
 

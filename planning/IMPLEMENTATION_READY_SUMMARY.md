@@ -53,6 +53,7 @@ All 7 critical blockers from the Implementation Readiness Review have been resol
 #### Visualizations
 - ✅ Watchlist panel with prices and sparklines
 - ✅ Main chart for selected ticker (SSE accumulation)
+- ✅ Portfolio heatmap visualization
 - ✅ Positions table with P&L
 - ✅ Portfolio value header (live updates)
 - ✅ Price flash animations
@@ -82,7 +83,6 @@ All 7 critical blockers from the Implementation Readiness Review have been resol
 - 📅 Real market data integration (Massive API)
 - 📅 Historical portfolio charts
 - 📅 Trade confirmation dialogs
-- 📅 Portfolio heatmap visualization
 
 ---
 
@@ -140,6 +140,7 @@ All 7 critical blockers from the Implementation Readiness Review have been resol
 - [ ] Header component (portfolio value, cash, connection status)
 - [ ] Watchlist panel (grid with sparklines)
 - [ ] Main chart area (SSE accumulation)
+- [ ] Portfolio heatmap (treemap by weight/P&L)
 - [ ] Positions table (P&L, cost basis)
 - [ ] Trade bar (ticker, quantity, buy/sell buttons)
 - [ ] AI chat panel (collapsible sidebar)
@@ -323,7 +324,6 @@ open http://localhost:8000
 ### Could Have (v2)
 - 📅 Historical P&L chart
 - 📅 Real market data
-- 📅 Portfolio heatmap
 - 📅 Trade confirmations
 - 📅 Advanced charting features
 

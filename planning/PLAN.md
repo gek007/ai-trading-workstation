@@ -25,7 +25,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 - **View sparkline mini-charts** — price action beside each ticker in the watchlist, accumulated on the frontend from the SSE stream since page load (sparklines fill in progressively)
 - **Click a ticker** to see a larger detailed chart in the main chart area
 - **Buy and sell shares** — market orders only, instant fill at current price, no fees, no confirmation dialog
-- **Monitor their portfolio** — a heatmap (treemap) showing positions sized by weight and colored by P&L, plus a P&L chart tracking total portfolio value over time
+- **Monitor their portfolio** — a heatmap (treemap) showing positions sized by weight and colored by P&L, plus live portfolio value/cash in the header
 - **View a positions table** — ticker, quantity, average cost, current price, unrealized P&L, % change
 - **Chat with the AI assistant** — ask about their portfolio, get analysis, and have the AI execute trades and manage the watchlist through natural language
 - **Manage the watchlist** — add/remove tickers manually or via the AI chat
@@ -67,7 +67,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 - **Database**: SQLite, single file at `backend/db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
 - **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
-- **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
+- **Market data**: Built-in simulator (GBM) for v1; real market data is deferred to v2
 
 ### Why These Choices
 
@@ -124,28 +124,27 @@ finally/
 # Required: OpenRouter API key for LLM chat functionality
 OPENROUTER_API_KEY=your-openrouter-api-key-here
 
-# Optional: Massive (Polygon.io) API key for real market data
-# If not set, the built-in market simulator is used (recommended for most users)
-MASSIVE_API_KEY=
-
 # Optional: Set to "true" for deterministic mock LLM responses (testing)
 LLM_MOCK=false
+
+# Optional: Seed for deterministic simulator price sequence (testing)
+MARKET_SIM_SEED=
 ```
 
 ### Behavior
 
-- If `MASSIVE_API_KEY` is set and non-empty → backend uses Massive REST API for market data
-- If `MASSIVE_API_KEY` is absent or empty → backend uses the built-in market simulator
+- Backend uses the built-in market simulator for market data in v1
 - If `LLM_MOCK=true` → backend returns deterministic mock LLM responses (for E2E tests)
+- If `MARKET_SIM_SEED` is set → simulator uses deterministic seeded randomness for reproducible price sequences
 - The backend reads `.env` from the project root (mounted into the container or read via docker `--env-file`)
 
 ---
 
 ## 6. Market Data
 
-### Two Implementations, One Interface
+### V1 Implementation
 
-Both the simulator and the Massive client implement the same abstract interface. The backend selects which to use based on the environment variable. All downstream code (SSE streaming, price cache, frontend) is agnostic to the source.
+The backend uses a built-in simulator in v1. Downstream code (SSE streaming, price cache, frontend) remains source-agnostic so a real data source can be added in v2 without changing consumer contracts.
 
 ### Simulator (Default)
 
@@ -156,17 +155,9 @@ Both the simulator and the Massive client implement the same abstract interface.
 - Starts from realistic seed prices (e.g., AAPL ~$190, GOOGL ~$175, etc.)
 - Runs as an in-process background task — no external dependencies
 
-### Massive API (Optional)
-
-- REST API polling (not WebSocket) — simpler, works on all tiers
-- Polls for the union of all watched tickers on a configurable interval
-- Free tier (5 calls/min): poll every 15 seconds
-- Paid tiers: poll every 2-15 seconds depending on tier
-- Parses REST response into the same format as the simulator
-
 ### Shared Price Cache
 
-- A single background task (simulator or Massive poller) writes to an in-memory price cache
+- A single simulator background task writes to an in-memory price cache
 - The cache holds the latest price, previous price, and timestamp for each ticker
 - SSE streams read from this cache and push updates to connected clients
 - This architecture supports future multi-user scenarios without changes to the data layer
@@ -225,12 +216,6 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 - `price` REAL
 - `executed_at` TEXT (ISO timestamp)
 
-**portfolio_snapshots** — Portfolio value over time (for P&L chart). Recorded every 30 seconds by a background task, and immediately after each trade execution.
-- `id` TEXT PRIMARY KEY (UUID)
-- `user_id` TEXT (default: `"default"`)
-- `total_value` REAL
-- `recorded_at` TEXT (ISO timestamp)
-
 **chat_messages** — Conversation history with LLM
 - `id` TEXT PRIMARY KEY (UUID)
 - `user_id` TEXT (default: `"default"`)
@@ -258,7 +243,6 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 |--------|------|-------------|
 | GET | `/api/portfolio` | Current positions, cash balance, total value, unrealized P&L |
 | POST | `/api/portfolio/trade` | Execute a trade: `{ticker, quantity, side}` |
-| GET | `/api/portfolio/history` | Portfolio value snapshots over time (for P&L chart) |
 
 ### Watchlist
 | Method | Path | Description |
@@ -281,7 +265,7 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 
 ## 9. LLM Integration
 
-When writing code to make calls to LLMs, use cerebras-inference skill to use LiteLLM via OpenRouter to the `openrouter/openai/gpt-oss-120b` model with Cerebras as the inference provider. Structured Outputs should be used to interpret the results.
+Use LiteLLM via OpenRouter with structured outputs for chat responses and action extraction.
 
 There is an OPENROUTER_API_KEY in the .env file in the project root.
 
@@ -292,7 +276,7 @@ When the user sends a chat message, the backend:
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
 2. Loads recent conversation history from the `chat_messages` table
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
-4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
+4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output
 5. Parses the complete structured JSON response
 6. Auto-executes any trades or watchlist changes specified in the response
 7. Stores the message and executed actions in `chat_messages`
@@ -355,7 +339,6 @@ The frontend is a single-page application with a dense, terminal-inspired layout
 - **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), daily change %, and a sparkline mini-chart (accumulated from SSE since page load)
 - **Main chart area** — larger chart for the currently selected ticker, displaying price history accumulated from SSE since page load. Chart updates in real-time as new price events arrive. Clicking a ticker in the watchlist selects it here. Chart starts empty on page load and fills progressively as data accumulates.
 - **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss)
-- **P&L chart** — line chart showing total portfolio value over time, using data from `portfolio_snapshots`
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
 - **Trade bar** — simple input area: ticker field, quantity field, buy button, sell button. Market orders, instant fill.
 - **AI chat panel** — docked/collapsible sidebar. Message input, scrolling conversation history, loading indicator while waiting for LLM response. Trade executions and watchlist changes shown inline as confirmations.
@@ -428,7 +411,7 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 ### Unit Tests (within `frontend/` and `backend/`)
 
 **Backend (pytest)**:
-- Market data: simulator generates valid prices, GBM math is correct, Massive API response parsing works, both implementations conform to the abstract interface
+- Market data: simulator generates valid prices, GBM math is correct, deterministic seeded mode works for test runs
 - Portfolio: trade execution logic, P&L calculations, edge cases (selling more than owned, buying with insufficient cash, selling at a loss)
 - LLM: structured output parsing handles all valid schemas, graceful handling of malformed responses, trade validation within chat flow
 - API routes: correct status codes, response shapes, error handling
@@ -451,106 +434,19 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Add and remove a ticker from the watchlist
 - Buy shares: cash decreases, position appears, portfolio updates
 - Sell shares: cash increases, position updates or disappears
-- Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
+- Portfolio visualization: heatmap renders with correct colors
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
 
 ---
 
-## 13. Review & Clarifications
+## 13. Implementation Status
 
-### Questions & Ambiguities
+All major planning blockers identified in `planning/PLAN_IMPLEMENTATION_READINESS_REVIEW.md` are resolved and corresponding decisions are documented in:
 
-**Database Location (RESOLVED):**
-- ✅ **RESOLVED**: All database files (schema, seed data, runtime database) are in `backend/db/`. The entire `backend/db/` directory is Docker volume-mounted for persistence. No root `db/` directory exists.
+- `planning/API_CONTRACTS.md` (API schemas, SSE format, trade validation, precision rules)
+- `planning/DATABASE_LOCATION_RESOLVED.md` (single database location under `backend/db/`)
+- `planning/MAIN_CHART_DATA_SOURCE.md` (session-only chart data via SSE accumulation)
+- `planning/PORTFOLIO_SNAPSHOTS_REMOVED.md` (portfolio snapshot feature removed from v1)
 
-**SSE Streaming Granularity:**
-- Line 178: "Server pushes price updates for all tickers known to the system at a regular cadence (~500ms)" — Is this one push event containing all ticker prices, or individual events per ticker? This affects frontend data structure design.
-
-**Sparkline Data Persistence:**
-- Lines 25, 355: Sparkline data is "accumulated from SSE since page load" — this means all historical sparkline data is lost on refresh. Should the frontend request historical sparkline data from the backend on load, or are sparklines purely ephemeral?
-
-**Fractional Share Precision:**
-- Lines 214, 224: "fractional shares supported" — What's the minimum quantity? Decimal precision? Should there be validation to prevent dust shares (e.g., 0.00000001 shares)?
-
-**Portfolio Snapshot Data Retention:**
-- Line 228: Snapshots recorded "every 30 seconds" — In a 24-hour period, this generates 2,880 records per day. Over a year, that's >1M records. Should there be a retention policy, downsampling (e.g., keep 30-second granularity for 7 days, then daily snapshots), or is unbounded growth acceptable?
-
-**Trade Confirmation Behavior:**
-- Line 27: "no confirmation dialog" for trades is mentioned, but line 323 says "Trades specified by the LLM execute automatically — no confirmation dialog." Are manual trades also without confirmation? This could lead to accidental mis-clicks. Consider adding confirmation for manual trades while keeping LLM trades auto-executed (as per design rationale).
-
-**Market Data Simulator Mode:**
-- The plan describes `LLM_MOCK` for testing, but there's no explicit mock mode for the market data simulator. For deterministic E2E tests, shouldn't the simulator also have a "seeded" or "deterministic" mode that produces the same price sequence every run?
-
-**Package Managers:**
-- The plan mentions `uv` (Python) and implicitly `npm` (Node.js, line 381). Should the plan explicitly state that `npm` (or `pnpm`/`yarn`) is the package manager for the frontend?
-
-### Feedback
-
-**Strengths:**
-- The single-container, single-port architecture is excellent for simplicity and developer experience
-- SSE over WebSockets is the right choice for one-way streaming
-- The `user_id` column defaulting to `"default"` is thoughtful for future multi-user support without schema migration
-- Clear separation between `frontend/` and `backend/` with well-defined contracts
-- Comprehensive testing strategy covering unit and E2E scenarios
-
-**Potential Issues:**
-- Line 284: The reference to "cerebras-inference skill" is an implementation detail that shouldn't be in PLAN.md. This belongs in a separate implementation guide. The plan should describe the what (LLM integration via OpenRouter), not the how (which skill to use).
-- The color scheme (lines 41-44) is specified but no guidance on when each color should be used. Consider a mini style guide.
-- No mention of error handling UI: What happens if SSE connection fails? If a trade fails validation? These should have clear user-facing messages.
-
-### Opportunities to Simplify
-
-**1. Remove Real Market Data Integration (Phase 2)**
-- **Current**: Both simulator and Massive API implementations
-- **Simplification**: Ship with only the simulator. Remove Massive API integration from v1.
-- **Rationale**: The simulator provides a complete experience. Real-time market data adds API key management, rate limiting, polling interval complexity, and potential API failure modes. This can be a "v2" feature.
-- **Impact**: Removes lines 159-165, environment variable `MASSIVE_API_KEY`, conditional market data selection logic, and one test scenario.
-
-**2. Eliminate Portfolio Snapshots Table (Compute on Demand)**
-- **Current**: Background task records snapshots every 30 seconds, stored in `portfolio_snapshots` table
-- **Simplification**: Compute P&L history on-demand from the `trades` table by replaying trades against historical prices
-- **Rationale**: Eliminates background task complexity, reduces database size, and provides infinite historical resolution. The `trades` table already contains all data needed.
-- **Impact**: Removes `portfolio_snapshots` table, background snapshot task, and `/api/portfolio/history` endpoint logic. Frontend computes P&L curve client-side from trade history + current prices.
-
-**3. Drop Sparkline Mini-Charts (Phase 2)**
-- **Current**: Sparkline beside each ticker, accumulated from SSE since page load
-- **Simplification**: Remove sparklines from the watchlist. Keep only the main chart for selected ticker.
-- **Rationale**: Sparklines add frontend complexity (data buffering, canvas rendering) for limited value. The main chart provides detailed historical view.
-- **Impact**: Removes sparkline data accumulation logic and canvas rendering from watchlist.
-
-**4. Defer Portfolio Heatmap (Phase 2)**
-- **Current**: Treemap visualization sized by weight, colored by P&L
-- **Simplification**: Replace with simpler visual indicator (e.g., color-coded P&L column in positions table)
-- **Rationale**: Treemap requires additional library (d3-hierarchy or similar) and complex layout logic. Positions table already shows P&L — just add color coding.
-- **Impact**: Removes treemap component, simplifies portfolio panel.
-
-**5. Auto-Execute LLM Trades with Confirmation Option**
-- **Current**: LLM trades execute automatically without confirmation
-- **Simplification**: Add a `confirmation_required` boolean field to the LLM response schema. When `true`, show a user confirmation dialog before executing
-- **Rationale**: Balances the "impressive demo" experience with user safety for larger trades or uncertain contexts
-- **Impact**: Adds one field to structured output schema, one confirmation dialog component. LLM can decide when confirmation is needed based on trade size or risk.
-
-**6. Remove Optional Cloud Deployment Section**
-- **Current**: Lines 420-422 mention Terraform configuration as "stretch goal"
-- **Simplification**: Remove entirely from PLAN.md
-- **Rationale**: This is out of scope for a capstone project and adds unnecessary complexity. If needed later, create a separate DEPLOYMENT.md
-- **Impact**: Removes 3 lines, no code changes
-
-**7. Simplify Database Directory Structure (RESOLVED)**
-- ✅ **RESOLVED**: Consolidated to `backend/db/` only. Schema files, seed data, and runtime database all in one location. Entire directory is Docker volume-mounted. No root `db/` directory exists.
-
-**Cumulative Impact if All Simplifications Adopted:**
-- Removes ~50 lines from PLAN.md
-- Eliminates 1 database table (`portfolio_snapshots`)
-- Removes 1 background task (snapshot recording)
-- Removes 1-2 frontend components (sparklines, treemap)
-- Removes 1-3 API integrations (Massage API, optional Terraform)
-- Reduces testing surface area
-- Accelerates development timeline by ~20-30%
-- Maintains all core functionality: trading, portfolio tracking, AI chat, watchlist management, price streaming
-
-**Recommended Minimal V1:**
-- Keep: Simulator, SSE streaming, manual trading, AI chat with auto-execution, positions table, main chart, watchlist CRUD
-- Phase 2: Real market data, sparklines, treemap, confirmation dialogs
-- The simplifications above preserve the "AI trading workstation" vision while reducing initial complexity
+This `PLAN.md` is the canonical v1 scope specification.
