@@ -64,7 +64,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 
 - **Frontend**: Next.js with TypeScript, built as a static export (`output: 'export'`), served by FastAPI as static files
 - **Backend**: FastAPI (Python), managed as a `uv` project
-- **Database**: SQLite, single file at `db/finally.db`, volume-mounted for persistence
+- **Database**: SQLite, single file at `backend/db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
 - **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
 - **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
@@ -88,7 +88,10 @@ The user runs a single Docker command (or a provided start script). A browser op
 finally/
 ├── frontend/                 # Next.js TypeScript project (static export)
 ├── backend/                  # FastAPI uv project (Python)
-│   └── db/                   # Schema definitions, seed data, migration logic
+│   └── db/                   # Schema definitions, seed data, runtime SQLite database
+│       ├── schema.sql        # Database schema (committed to git)
+│       ├── seed.sql          # Default seed data (committed to git)
+│       └── finally.db        # Runtime database (gitignored, volume-mounted)
 ├── planning/                 # Project-wide documentation for agents
 │   ├── PLAN.md               # This document
 │   └── ...                   # Additional agent reference docs
@@ -98,8 +101,6 @@ finally/
 │   ├── start_windows.ps1     # Launch Docker container (Windows PowerShell)
 │   └── stop_windows.ps1      # Stop Docker container (Windows PowerShell)
 ├── test/                     # Playwright E2E tests + docker-compose.test.yml
-├── db/                       # Volume mount target (SQLite file lives here at runtime)
-│   └── .gitkeep              # Directory exists in repo; finally.db is gitignored
 ├── Dockerfile                # Multi-stage build (Node → Python)
 ├── docker-compose.yml        # Optional convenience wrapper
 ├── .env                      # Environment variables (gitignored, .env.example committed)
@@ -110,8 +111,7 @@ finally/
 
 - **`frontend/`** is a self-contained Next.js project. It knows nothing about Python. It talks to the backend via `/api/*` endpoints and `/api/stream/*` SSE endpoints. Internal structure is up to the Frontend Engineer agent.
 - **`backend/`** is a self-contained uv project with its own `pyproject.toml`. It owns all server logic including database initialization, schema, seed data, API routes, SSE streaming, market data, and LLM integration. Internal structure is up to the Backend/Market Data agents.
-- **`backend/db/`** contains schema SQL definitions and seed logic. The backend lazily initializes the database on first request — creating tables and seeding default data if the SQLite file doesn't exist or is empty.
-- **`db/`** at the top level is the runtime volume mount point. The SQLite file (`db/finally.db`) is created here by the backend and persists across container restarts via Docker volume.
+- **`backend/db/`** contains schema SQL definitions, seed data files, and the runtime SQLite database. The backend lazily initializes the database on first request — creating tables and seeding default data if `finally.db` doesn't exist or is empty. The entire `backend/db/` directory is Docker volume-mounted for persistence.
 - **`planning/`** contains project-wide documentation, including this plan. All agents reference files here as the shared contract.
 - **`test/`** contains Playwright E2E tests and supporting infrastructure (e.g., `docker-compose.test.yml`). Unit tests live within `frontend/` and `backend/` respectively, following each framework's conventions.
 - **`scripts/`** contains start/stop scripts that wrap Docker commands.
@@ -353,7 +353,7 @@ When `LLM_MOCK=true`, the backend returns deterministic mock responses instead o
 The frontend is a single-page application with a dense, terminal-inspired layout. The specific component architecture and layout system is up to the Frontend Engineer, but the UI should include these elements:
 
 - **Watchlist panel** — grid/table of watched tickers with: ticker symbol, current price (flashing green/red on change), daily change %, and a sparkline mini-chart (accumulated from SSE since page load)
-- **Main chart area** — larger chart for the currently selected ticker, with at minimum price over time. Clicking a ticker in the watchlist selects it here.
+- **Main chart area** — larger chart for the currently selected ticker, displaying price history accumulated from SSE since page load. Chart updates in real-time as new price events arrive. Clicking a ticker in the watchlist selects it here. Chart starts empty on page load and fills progressively as data accumulates.
 - **Portfolio heatmap** — treemap visualization where each rectangle is a position, sized by portfolio weight, colored by P&L (green = profit, red = loss)
 - **P&L chart** — line chart showing total portfolio value over time, using data from `portfolio_snapshots`
 - **Positions table** — tabular view of all positions: ticker, quantity, avg cost, current price, unrealized P&L, % change
@@ -396,10 +396,10 @@ FastAPI serves the static frontend files and all API routes on port 8000.
 The SQLite database persists via a named Docker volume:
 
 ```bash
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+docker run -v finally-data:/app/backend/db -p 8000:8000 --env-file .env finally
 ```
 
-The `db/` directory in the project root maps to `/app/db` in the container. The backend writes `finally.db` to this path.
+The `backend/db/` directory maps to `/app/backend/db` in the container. The backend writes `finally.db` to this path, which persists across container restarts via the Docker volume.
 
 ### Start/Stop Scripts
 
@@ -461,8 +461,8 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 
 ### Questions & Ambiguities
 
-**Database Location Confusion:**
-- The plan mentions both `backend/db/` (line 91: "Schema definitions, seed data, migration logic") and `db/` at the root (line 101: "Volume mount target"). This is confusing. Should `backend/db/` contain only schema/seed scripts while the actual SQLite file gets created in the root `db/` directory? This dual meaning of "db" needs clearer terminology.
+**Database Location (RESOLVED):**
+- ✅ **RESOLVED**: All database files (schema, seed data, runtime database) are in `backend/db/`. The entire `backend/db/` directory is Docker volume-mounted for persistence. No root `db/` directory exists.
 
 **SSE Streaming Granularity:**
 - Line 178: "Server pushes price updates for all tickers known to the system at a regular cadence (~500ms)" — Is this one push event containing all ticker prices, or individual events per ticker? This affects frontend data structure design.
@@ -537,13 +537,8 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - **Rationale**: This is out of scope for a capstone project and adds unnecessary complexity. If needed later, create a separate DEPLOYMENT.md
 - **Impact**: Removes 3 lines, no code changes
 
-**7. Simplify Database Directory Structure**
-- **Current**: Both `backend/db/` and `db/` exist, causing confusion
-- **Simplification**: Consolidate to single location. Either:
-  - Option A: Keep schema in `backend/schema/`, runtime DB in `db/`
-  - Option B: Put everything in `backend/db/`, mount that entire directory
-- **Rationale**: Two directories with similar names is confusing for developers
-- **Impact**: Clarifies documentation, no code changes
+**7. Simplify Database Directory Structure (RESOLVED)**
+- ✅ **RESOLVED**: Consolidated to `backend/db/` only. Schema files, seed data, and runtime database all in one location. Entire directory is Docker volume-mounted. No root `db/` directory exists.
 
 **Cumulative Impact if All Simplifications Adopted:**
 - Removes ~50 lines from PLAN.md
