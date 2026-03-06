@@ -454,3 +454,108 @@ The container is designed to deploy to AWS App Runner, Render, or any container 
 - Portfolio visualization: heatmap renders with correct colors, P&L chart has data points
 - AI chat (mocked): send a message, receive a response, trade execution appears inline
 - SSE resilience: disconnect and verify reconnection
+
+---
+
+## 13. Review & Clarifications
+
+### Questions & Ambiguities
+
+**Database Location Confusion:**
+- The plan mentions both `backend/db/` (line 91: "Schema definitions, seed data, migration logic") and `db/` at the root (line 101: "Volume mount target"). This is confusing. Should `backend/db/` contain only schema/seed scripts while the actual SQLite file gets created in the root `db/` directory? This dual meaning of "db" needs clearer terminology.
+
+**SSE Streaming Granularity:**
+- Line 178: "Server pushes price updates for all tickers known to the system at a regular cadence (~500ms)" — Is this one push event containing all ticker prices, or individual events per ticker? This affects frontend data structure design.
+
+**Sparkline Data Persistence:**
+- Lines 25, 355: Sparkline data is "accumulated from SSE since page load" — this means all historical sparkline data is lost on refresh. Should the frontend request historical sparkline data from the backend on load, or are sparklines purely ephemeral?
+
+**Fractional Share Precision:**
+- Lines 214, 224: "fractional shares supported" — What's the minimum quantity? Decimal precision? Should there be validation to prevent dust shares (e.g., 0.00000001 shares)?
+
+**Portfolio Snapshot Data Retention:**
+- Line 228: Snapshots recorded "every 30 seconds" — In a 24-hour period, this generates 2,880 records per day. Over a year, that's >1M records. Should there be a retention policy, downsampling (e.g., keep 30-second granularity for 7 days, then daily snapshots), or is unbounded growth acceptable?
+
+**Trade Confirmation Behavior:**
+- Line 27: "no confirmation dialog" for trades is mentioned, but line 323 says "Trades specified by the LLM execute automatically — no confirmation dialog." Are manual trades also without confirmation? This could lead to accidental mis-clicks. Consider adding confirmation for manual trades while keeping LLM trades auto-executed (as per design rationale).
+
+**Market Data Simulator Mode:**
+- The plan describes `LLM_MOCK` for testing, but there's no explicit mock mode for the market data simulator. For deterministic E2E tests, shouldn't the simulator also have a "seeded" or "deterministic" mode that produces the same price sequence every run?
+
+**Package Managers:**
+- The plan mentions `uv` (Python) and implicitly `npm` (Node.js, line 381). Should the plan explicitly state that `npm` (or `pnpm`/`yarn`) is the package manager for the frontend?
+
+### Feedback
+
+**Strengths:**
+- The single-container, single-port architecture is excellent for simplicity and developer experience
+- SSE over WebSockets is the right choice for one-way streaming
+- The `user_id` column defaulting to `"default"` is thoughtful for future multi-user support without schema migration
+- Clear separation between `frontend/` and `backend/` with well-defined contracts
+- Comprehensive testing strategy covering unit and E2E scenarios
+
+**Potential Issues:**
+- Line 284: The reference to "cerebras-inference skill" is an implementation detail that shouldn't be in PLAN.md. This belongs in a separate implementation guide. The plan should describe the what (LLM integration via OpenRouter), not the how (which skill to use).
+- The color scheme (lines 41-44) is specified but no guidance on when each color should be used. Consider a mini style guide.
+- No mention of error handling UI: What happens if SSE connection fails? If a trade fails validation? These should have clear user-facing messages.
+
+### Opportunities to Simplify
+
+**1. Remove Real Market Data Integration (Phase 2)**
+- **Current**: Both simulator and Massive API implementations
+- **Simplification**: Ship with only the simulator. Remove Massive API integration from v1.
+- **Rationale**: The simulator provides a complete experience. Real-time market data adds API key management, rate limiting, polling interval complexity, and potential API failure modes. This can be a "v2" feature.
+- **Impact**: Removes lines 159-165, environment variable `MASSIVE_API_KEY`, conditional market data selection logic, and one test scenario.
+
+**2. Eliminate Portfolio Snapshots Table (Compute on Demand)**
+- **Current**: Background task records snapshots every 30 seconds, stored in `portfolio_snapshots` table
+- **Simplification**: Compute P&L history on-demand from the `trades` table by replaying trades against historical prices
+- **Rationale**: Eliminates background task complexity, reduces database size, and provides infinite historical resolution. The `trades` table already contains all data needed.
+- **Impact**: Removes `portfolio_snapshots` table, background snapshot task, and `/api/portfolio/history` endpoint logic. Frontend computes P&L curve client-side from trade history + current prices.
+
+**3. Drop Sparkline Mini-Charts (Phase 2)**
+- **Current**: Sparkline beside each ticker, accumulated from SSE since page load
+- **Simplification**: Remove sparklines from the watchlist. Keep only the main chart for selected ticker.
+- **Rationale**: Sparklines add frontend complexity (data buffering, canvas rendering) for limited value. The main chart provides detailed historical view.
+- **Impact**: Removes sparkline data accumulation logic and canvas rendering from watchlist.
+
+**4. Defer Portfolio Heatmap (Phase 2)**
+- **Current**: Treemap visualization sized by weight, colored by P&L
+- **Simplification**: Replace with simpler visual indicator (e.g., color-coded P&L column in positions table)
+- **Rationale**: Treemap requires additional library (d3-hierarchy or similar) and complex layout logic. Positions table already shows P&L — just add color coding.
+- **Impact**: Removes treemap component, simplifies portfolio panel.
+
+**5. Auto-Execute LLM Trades with Confirmation Option**
+- **Current**: LLM trades execute automatically without confirmation
+- **Simplification**: Add a `confirmation_required` boolean field to the LLM response schema. When `true`, show a user confirmation dialog before executing
+- **Rationale**: Balances the "impressive demo" experience with user safety for larger trades or uncertain contexts
+- **Impact**: Adds one field to structured output schema, one confirmation dialog component. LLM can decide when confirmation is needed based on trade size or risk.
+
+**6. Remove Optional Cloud Deployment Section**
+- **Current**: Lines 420-422 mention Terraform configuration as "stretch goal"
+- **Simplification**: Remove entirely from PLAN.md
+- **Rationale**: This is out of scope for a capstone project and adds unnecessary complexity. If needed later, create a separate DEPLOYMENT.md
+- **Impact**: Removes 3 lines, no code changes
+
+**7. Simplify Database Directory Structure**
+- **Current**: Both `backend/db/` and `db/` exist, causing confusion
+- **Simplification**: Consolidate to single location. Either:
+  - Option A: Keep schema in `backend/schema/`, runtime DB in `db/`
+  - Option B: Put everything in `backend/db/`, mount that entire directory
+- **Rationale**: Two directories with similar names is confusing for developers
+- **Impact**: Clarifies documentation, no code changes
+
+**Cumulative Impact if All Simplifications Adopted:**
+- Removes ~50 lines from PLAN.md
+- Eliminates 1 database table (`portfolio_snapshots`)
+- Removes 1 background task (snapshot recording)
+- Removes 1-2 frontend components (sparklines, treemap)
+- Removes 1-3 API integrations (Massage API, optional Terraform)
+- Reduces testing surface area
+- Accelerates development timeline by ~20-30%
+- Maintains all core functionality: trading, portfolio tracking, AI chat, watchlist management, price streaming
+
+**Recommended Minimal V1:**
+- Keep: Simulator, SSE streaming, manual trading, AI chat with auto-execution, positions table, main chart, watchlist CRUD
+- Phase 2: Real market data, sparklines, treemap, confirmation dialogs
+- The simplifications above preserve the "AI trading workstation" vision while reducing initial complexity
