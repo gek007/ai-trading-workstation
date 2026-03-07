@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(codex exec:*)",
-      "Bash(codex:*)"
+      "Bash(codex:*)",
+      "Bash(uv run:*)",
+      "Bash(ls:*)",
+      "Bash(taskkill:*)",
+      "Bash(curl:*)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_take_screenshot",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_run_code"
     ]
   }
 }

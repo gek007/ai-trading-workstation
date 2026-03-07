@@ -2,6 +2,52 @@
 
 FastAPI backend for the FinAlly AI Trading Workstation.
 
+## Quick Start
+
+### Running the Server
+
+```bash
+# Option 1: Run with uvicorn directly (recommended for development)
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# Option 2: Run using the Python module
+uv run python -m app.main
+
+# Option 3: Run with uvicorn without reload (production-like)
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+The server will start on `http://localhost:8000`
+
+### Available Endpoints
+
+- `GET /` - API information and status
+- `GET /api/health` - Health check
+- `GET /api/stream/prices` - SSE stream of live price updates
+- `GET /docs` - Interactive API documentation (Swagger UI)
+- `GET /redoc` - Alternative API documentation (ReDoc)
+
+### Market Data Demo
+
+To see a live terminal dashboard of simulated prices:
+
+```bash
+uv run market_data_demo.py
+```
+
+This will display a 60-second live demo with sparkline charts and price updates.
+
+## Environment Variables
+
+```bash
+# Optional: Use real market data from Massive/Polygon.io API
+# If not set, the built-in GBM simulator will be used
+export MASSIVE_API_KEY="your-api-key-here"
+
+# Optional: Use deterministic simulator for testing
+export MARKET_SIM_SEED=42
+```
+
 ## Structure
 
 - `app/` - Application code
