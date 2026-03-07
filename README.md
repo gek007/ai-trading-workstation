@@ -299,7 +299,8 @@ The Docker container deploys to any container platform:
 
 - AWS App Runner
 - Render
-- Google Cloud Run
+- Google Cloud Run<img width="1660" height="908" alt="comet_DgfKRlq008" src="https://github.com/user-attachments/assets/9c734e8d-b008-4bed-b048-75d7ecbccea2" />
+
 - Any OCI-compatible host
 
 ## Documentation
