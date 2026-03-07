@@ -460,3 +460,116 @@ All major planning blockers identified in `planning/PLAN_IMPLEMENTATION_READINES
 - `planning/PORTFOLIO_SNAPSHOTS_REMOVED.md` (portfolio snapshot feature removed from v1)
 
 This `PLAN.md` is the canonical v1 scope specification.
+
+---
+
+## 14. Code Review Feedback
+
+### Questions & Clarifications
+
+**Market Data (Section 6)**
+- GBM "configurable drift and volatility per ticker" — Where is this configuration stored? In code constants, environment variables, or the database? Should this be seed data?
+- "Random events" (2-5% sudden moves) — How frequently do these occur? Is this deterministic or configurable? Could make testing unpredictable.
+- SSE section says server pushes updates for "all tickers known to the system" but then says "equivalent to the user's watchlist" — these are different concepts. Which is it? In single-user v1 they're the same, but the wording matters for multi-user future-proofing.
+
+**Database Schema (Section 7)**
+- `chat_messages.actions` stores JSON — Should there be schema validation for this JSON column? What happens if malformed?
+- No `indexes` documented — Will there be indexes on `user_id`, `ticker`, or `executed_at` for query performance?
+- No `foreign keys` — Should trades have a foreign key to positions? Or is this intentionally denormalized for simplicity?
+
+**LLM Integration (Section 9)**
+- "Recent conversation history" — How many messages? What's the context window limit? Should oldest messages be pruned automatically?
+- Portfolio context loads "live prices" — Does this block the LLM request? What if SSE is disconnected and prices are stale?
+- System prompt mentions "analyze risk concentration" — What risk metrics? Position size limits? Sector concentration? Should be more specific for the LLM.
+
+**Frontend Design (Section 10)**
+- "Canvas-based charting library preferred (Lightweight Charts or Recharts)" — Recharts is SVG-based, not canvas-based. Is SVG acceptable? If canvas is preferred, should specify Lightweight Charts or similar.
+- "Portfolio heatmap (treemap)" — Which library? d3, react-d3-library, custom implementation? This is non-trivial to implement well.
+- Price flash animation (~500ms) — Should there be a minimum time between flashes to prevent seizure-inducing strobe effects during high volatility?
+- What happens to chart data when SSE disconnects? Does it show "stale" indicator? Does it stop updating? Buffer and replay on reconnect?
+
+**API & Trade Validation (Section 8)**
+- `POST /api/portfolio/trade` — What are the min/max valid quantities? Can I buy 0.00000001 shares? Can I buy negative shares?
+- Should there be rate limiting on trade execution to prevent accidental rapid-fire trading?
+- No mention of error response format — Should be consistent JSON shape like `{ "error": "string", "code": "string" }`
+- `GET /api/portfolio` includes "unrealized P&L" — Is this calculated from latest cached price or live price? Stale prices could mislead.
+
+**Docker & Deployment (Section 11)**
+- "Optional cloud deployment" — What about environment-specific configuration? Will `.env` be different for production? Should document required vs optional env vars more clearly.
+- Docker volume is `finally-data:/app/backend/db` — What if user changes project directory name? Should use named volume with warning or relative path.
+
+**Testing (Section 12)**
+- "Deterministic seeded mode works for test runs" — Is `MARKET_SIM_SEED` the only way? Or is there a test mode that's always deterministic?
+- E2E tests with Playwright — What's the test timeout? SSE connections can hang indefinitely if not handled.
+- No mention of integration tests — Should there be tests that verify SSE → frontend → round-trip without browser?
+
+**General**
+- No logging strategy documented — What gets logged? At what level? Where do logs go?
+- No error handling strategy — What happens when the LLM API is down? When Massive API is down? Database corruption?
+- No monitoring/observability — How will developers know the system is healthy beyond `/api/health`?
+
+### Opportunities to Simplify
+
+**Documentation Structure**
+- The "Why These Choices" table (Section 3.2) is excellent — Consider adding similar rationale tables to other sections (Database Schema, API Design, LLM Integration) for consistency
+- Color scheme values (Section 2.3) are buried in prose — A quick-reference table or CSS variable naming guide would be helpful for frontend developers
+- Environment variables (Section 5) and their behavior (Section 5.1) could be merged into one table with columns: `Variable`, `Required/Optional`, `Default`, `Behavior When Set`
+
+**Database & Schema**
+- Consider adding an explicit table in PLAN.md listing all columns with types, defaults, and constraints — Currently this is in prose and easy to miss
+- Seed data could be a clear table instead of a bulleted list — Include all seed values (GBM params if in DB, default cash, default watchlist)
+- The `user_id = "default"` pattern is smart but could be called out more explicitly in a "Future Multi-User Strategy" subsection
+
+**API Design**
+- Trade endpoint could be simplified to single `POST /api/trade` instead of `/api/portfolio/trade` — "portfolio" prefix implies hierarchy that doesn't exist
+- Consider adding a table of all endpoints with columns: `Method`, `Path`, `Request Body`, `Response`, `Error Codes` — Currently need to cross-reference with `API_CONTRACTS.md`
+
+**Frontend**
+- Price flash animation could be simplified to CSS class toggle only if price changed direction (up→up, down→down) — Flashing on every tick might be too much
+- Main chart "starts empty and fills progressively" — Could add a note that this is a deliberate UX choice to show data is live, not a limitation
+- Consider removing "docked/collapsible" for AI chat panel in v1 — Either always visible or always hidden; collapsible adds complexity for first implementation
+
+**LLM Integration**
+- Auto-execution without confirmation is bold but right for v1 — Could add a note that this is intentional and will be reconsidered for v2 if users want "suggest-only mode"
+- Consider removing "watchlist changes" from LLM v1 scope — Trades are the exciting agentic feature; watchlist management is secondary and adds validation complexity
+
+**Testing**
+- E2E test infrastructure is well-specified — Could add a note about test data isolation: do tests use a separate test database or reset/clean the main one?
+- "Deterministic seeded mode" could be simplified to just "set `MARKET_SIM_SEED` in test env vars" rather than implying multiple modes
+
+### Ambiguities to Resolve
+
+1. **SSE push scope**: Watchlist-only vs all-known-tickers? Matters for frontend data architecture.
+2. **GBM parameters storage**: Code, env vars, or database? Affects configuration story.
+3. **Chart library**: Canvas vs SVG? Recharts is mentioned but is SVG-based.
+4. **Treemap implementation**: Which library? d3 is complex; custom might be simpler for v1.
+5. **Chat history limit**: How many messages? Token limit? Oldest pruning strategy?
+6. **Fractional share bounds**: Min/max quantity validation rules.
+7. **Error response format**: Consistent JSON schema for errors across all endpoints.
+8. **P&L calculation source**: Cached price vs live price? Staleness indicator?
+9. **SSE reconnect behavior**: Buffer and replay? Drop missed updates? Show "stale" indicator?
+10. **Logging/monitoring**: What gets logged? Where? How to debug production issues?
+
+### Positive Notes
+
+- Single container, single port architecture is beautifully simple for a course project
+- SSE over WebSockets is the right call for one-way streaming
+- Lazy DB initialization eliminates setup friction
+- The user_id="default" pattern is elegant future-proofing
+- Mock modes (LLM_MOCK, MARKET_SIM_SEED) for testing show good engineering discipline
+- "Why These Choices" rationale table is excellent — more of this throughout
+- The architecture diagram in Section 3 is clear and accurate
+- Static Next.js export is smart — no build server, no SSR complexity, easy deployment
+
+### Summary
+
+The PLAN.md is comprehensive and well-structured. The main areas for improvement are:
+
+1. **Add missing specificity** around configuration storage (GBM params), validation bounds (fractional shares), error handling, and logging
+2. **Resolve contradictions** between "all tickers" and "watchlist" in SSE section
+3. **Add rationale tables** like Section 3.2 to other major sections
+4. **Clarify frontend implementation details** (chart library selection, treemap library, SSE reconnect behavior)
+5. **Document error response format** consistently across all endpoints
+6. **Add quick-reference tables** for color scheme, env vars, database schema
+
+The plan is strong as-is. Addressing these clarifications would make it unambiguous for implementing agents.
