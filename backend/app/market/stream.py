@@ -78,9 +78,8 @@ async def _generate_events(
                 prices = price_cache.get_all()
 
                 if prices:
-                    data = {ticker: update.to_dict() for ticker, update in prices.items()}
-                    payload = json.dumps(data)
-                    yield f"data: {payload}\n\n"
+                    payload = json.dumps({"tickers": [u.to_dict() for u in prices.values()]})
+                    yield f"event: price_update\ndata: {payload}\n\n"
 
             await asyncio.sleep(interval)
     except asyncio.CancelledError:

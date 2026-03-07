@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+/* ── Design tokens ─────────────────────────────────────────────────────────── */
+:root {
+  --bg-primary:   #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary:  #1c2128;
+  --border:       #30363d;
+  --text-primary: #e6edf3;
+  --text-muted:   #8b949e;
+  --accent-yellow:#ecad0a;
+  --accent-blue:  #209dd7;
+  --accent-purple:#753991;
+  --price-up:     #00c853;
+  --price-down:   #ff5252;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Tailwind custom utilities ─────────────────────────────────────────────── */
+@theme {
+  --color-bg-primary:   var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary:  var(--bg-tertiary);
+  --color-border:       var(--border);
+  --color-primary:      var(--text-primary);
+  --color-muted:        var(--text-muted);
+  --color-accent-yellow: var(--accent-yellow);
+  --color-accent-blue:  var(--accent-blue);
+  --color-accent-purple: var(--accent-purple);
+  --color-up:           var(--price-up);
+  --color-down:         var(--price-down);
+}
+
+/* ── Panel ────────────────────────────────────────────────────────────────── */
+.panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Watchlist row ────────────────────────────────────────────────────────── */
+.watchlist-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 150ms;
+  user-select: none;
+}
+.watchlist-row:hover { background: var(--bg-tertiary); }
+.watchlist-row.selected { background: rgba(32, 157, 215, 0.08); border-left: 2px solid var(--accent-blue); }
+
+/* ── Price flash ──────────────────────────────────────────────────────────── */
+@keyframes flash-up {
+  0%   { background-color: rgba(0, 200, 83, 0.30); }
+  100% { background-color: transparent; }
+}
+@keyframes flash-down {
+  0%   { background-color: rgba(255, 82, 82, 0.30); }
+  100% { background-color: transparent; }
+}
+.flash-up   { animation: flash-up   500ms ease-out; }
+.flash-down { animation: flash-down 500ms ease-out; }
+
+/* ── Inputs ───────────────────────────────────────────────────────────────── */
+.input {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  padding: 5px 8px;
+  outline: none;
+  transition: border-color 150ms;
+}
+.input:focus { border-color: var(--accent-blue); }
+.input::placeholder { color: var(--text-muted); }
+.input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn-accent {
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 150ms;
+}
+.btn-accent:hover { opacity: 0.85; }
+.btn-accent:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-buy {
+  background: rgba(0, 200, 83, 0.15);
+  border: 1px solid var(--price-up);
+  color: var(--price-up);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.btn-buy:hover  { background: rgba(0, 200, 83, 0.25); }
+.btn-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-sell {
+  background: rgba(255, 82, 82, 0.15);
+  border: 1px solid var(--price-down);
+  color: var(--price-down);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.btn-sell:hover  { background: rgba(255, 82, 82, 0.25); }
+.btn-sell:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-purple {
+  background: var(--accent-purple);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 150ms;
+}
+.btn-purple:hover { opacity: 0.85; }
+.btn-purple:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }

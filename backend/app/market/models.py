@@ -29,12 +29,12 @@ class PriceUpdate:
 
     @property
     def direction(self) -> str:
-        """'up', 'down', or 'flat'."""
+        """'up', 'down', or 'unchanged'."""
         if self.price > self.previous_price:
             return "up"
         elif self.price < self.previous_price:
             return "down"
-        return "flat"
+        return "unchanged"
 
     def to_dict(self) -> dict:
         """Serialize for JSON / SSE transmission."""
