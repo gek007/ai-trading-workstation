@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # ============================================================================
 # Request Models
@@ -15,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 class TradeRequest(BaseModel):
     """Request to execute a trade."""
 
-    ticker: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]+$")
+    ticker: str = Field(..., min_length=1, max_length=5, pattern="^[a-zA-Z]+$")
     quantity: float = Field(..., gt=0, le=1000000)
     side: Literal["buy", "sell"]
 
@@ -98,13 +96,3 @@ class PositionRow(BaseModel):
     updated_at: str
 
 
-class TradeRow(BaseModel):
-    """Database row for a trade."""
-
-    id: str
-    user_id: str
-    ticker: str
-    side: str
-    quantity: float
-    price: float
-    executed_at: str

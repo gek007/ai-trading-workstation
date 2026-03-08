@@ -4,7 +4,7 @@ import { useApp } from "@/contexts/AppContext";
 import { fmt } from "@/lib/utils";
 
 export default function TradeBar() {
-  const { prices, selectedTicker, executeTrade, refreshPortfolio } = useApp();
+  const { prices, selectedTicker, executeTrade } = useApp();
   const [ticker, setTicker] = useState("");
   const [qty, setQty] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,27 +16,29 @@ export default function TradeBar() {
   const trade = async (side: "buy" | "sell") => {
     const t = effectiveTicker;
     const q = parseFloat(qty);
-    if (!t || !/^[A-Z]{1,5}$/.test(t)) return setMessage({ text: "Enter a valid ticker (1-5 letters)", ok: false });
-    if (!q || q <= 0) return setMessage({ text: "Enter a valid quantity", ok: false });
+    if (!t || !/^[A-Z]{1,5}$/.test(t)) {
+      setMessage({ text: "Enter a valid ticker (1-5 letters)", ok: false });
+      return;
+    }
+    if (!q || q <= 0) {
+      setMessage({ text: "Enter a valid quantity", ok: false });
+      return;
+    }
 
     setLoading(true);
     setMessage(null);
     try {
       const res = await executeTrade({ ticker: t, quantity: q, side });
-      await refreshPortfolio();
-      const trade = res as unknown as { trade: { quantity: number; price: number; side: string; ticker: string } };
-      const t2 = (trade as unknown as { trade?: { quantity: number; price: number; side: string; ticker: string } })?.trade;
+      const { trade: executed } = res;
       setMessage({
-        text: t2
-          ? `${t2.side === "buy" ? "Bought" : "Sold"} ${fmt.qty(t2.quantity)} ${t2.ticker} @ ${fmt.price(t2.price)}`
-          : `${side === "buy" ? "Buy" : "Sell"} executed`,
+        text: `${executed.side === "buy" ? "Bought" : "Sold"} ${fmt.qty(executed.quantity)} ${executed.ticker} @ ${fmt.price(executed.price)}`,
         ok: true,
       });
       setQty("");
     } catch (err: unknown) {
       const detail =
-        (err as { detail?: string })?.detail ??
         (err as { error?: { message?: string } })?.error?.message ??
+        (err as { detail?: string })?.detail ??
         "Trade failed";
       setMessage({ text: detail, ok: false });
     } finally {
@@ -56,6 +58,7 @@ export default function TradeBar() {
           maxLength={5}
           className="input w-24 uppercase font-semibold text-accent-yellow text-sm"
           disabled={loading}
+          aria-label="Ticker symbol"
         />
 
         <input
@@ -67,6 +70,7 @@ export default function TradeBar() {
           step="1"
           className="input w-24 text-sm"
           disabled={loading}
+          aria-label="Quantity"
         />
 
         {livePrice && (

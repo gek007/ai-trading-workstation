@@ -5,7 +5,8 @@ from __future__ import annotations
 import uuid
 
 from app.db import get_db
-from app.market import MarketDataSource, PriceCache
+from app.errors import watchlist_exists, watchlist_not_found
+from app.market import PriceCache
 from app.watchlist.models import WatchlistItem, WatchlistResponse
 
 
@@ -78,7 +79,7 @@ class WatchlistService:
                 (user_id, ticker),
             )
             if cursor.fetchone():
-                raise ValueError(f"Ticker '{ticker}' is already in your watchlist")
+                raise watchlist_exists(ticker)
 
             # Add ticker
             watchlist_id = str(uuid.uuid4())
@@ -116,7 +117,7 @@ class WatchlistService:
                 (user_id, ticker),
             )
             if not cursor.fetchone():
-                raise ValueError(f"Ticker '{ticker}' is not in your watchlist")
+                raise watchlist_not_found(ticker)
 
             # Remove ticker
             cursor.execute(

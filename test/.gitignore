@@ -1,0 +1,25 @@
+# Test results
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Node modules
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Coverage
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

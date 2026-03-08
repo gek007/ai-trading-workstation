@@ -1,0 +1,31 @@
+# Docker Compose configuration for FinAlly - AI Trading Workstation
+# This is an optional convenience wrapper around the Docker run command
+
+services:
+  finally:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finally:latest
+    container_name: finally-app
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite database
+      - finally-data:/app/db
+    env_file:
+      - .env
+    environment:
+      # Override any environment variables here if needed
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  finally-data:
+    driver: local

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AddToWatchlistRequest(BaseModel):
     """Request to add a ticker to the watchlist."""
 
-    ticker: str = Field(..., min_length=1, max_length=5, pattern="^[A-Z]+$")
+    ticker: str = Field(..., min_length=1, max_length=5, pattern=r"^[a-zA-Z]+$")
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, v: str) -> str:
+        return v.upper().strip()
 
 
 class WatchlistItem(BaseModel):

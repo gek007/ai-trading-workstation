@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.chat import create_chat_router
 from app.db import get_db
+from app.errors import AppError, app_error_handler
 from app.market import PriceCache, create_market_data_source, create_stream_router
 from app.market.seed_prices import SEED_PRICES
 from app.portfolio import create_portfolio_router
@@ -83,6 +84,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_exception_handler(AppError, app_error_handler)
 
 # CORS — allow the Next.js dev server and any same-origin requests
 app.add_middleware(

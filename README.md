@@ -57,7 +57,83 @@ Single-container, single-port architecture for simplicity:
 - **Static export for production** — Next.js built to `backend/static/`; single port, zero CORS, simple deployment
 - **Dev proxy rewrites** — During `npm run dev`, Next.js proxies `/api/*` to `localhost:8000` so both servers coexist
 
-## Quick Start
+---
+
+## Quick Start (Docker - Recommended)
+
+The easiest way to run FinAlly is with Docker. All dependencies are packaged in a single container.
+
+### Prerequisites
+
+- Docker Desktop installed ([Download](https://www.docker.com/products/docker-desktop))
+- OpenRouter API key ([get one here](https://openrouter.ai/))
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url>
+cd finally
+cp .env.example .env
+# Edit .env and add your OPENROUTER_API_KEY
+```
+
+### 2. Start the application
+
+**macOS/Linux:**
+```bash
+chmod +x scripts/*.sh  # Make scripts executable (first time only)
+./scripts/start_mac.sh
+```
+
+**Windows (PowerShell):**
+```bash
+.\scripts\start_windows.ps1
+```
+
+The script will:
+- Build the Docker image (first run only, takes 2-3 minutes)
+- Start the container on port 8000
+- Open your browser to `http://localhost:8000`
+
+Your SQLite database persists via a Docker volume named `finally-data`.
+
+### 3. Stop the application
+
+**macOS/Linux:**
+```bash
+./scripts/stop_mac.sh
+```
+
+**Windows (PowerShell):**
+```bash
+.\scripts\stop_windows.ps1
+```
+
+The container stops but your data (portfolio, trades, watchlist) is preserved.
+
+### To completely reset (delete all data)
+
+```bash
+docker stop finally-app
+docker rm finally-app
+docker volume rm finally-data
+```
+
+### Docker Compose (Alternative)
+
+If you prefer using Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+Then open `http://localhost:8000`.
+
+---
+
+## Development Quick Start (Manual Setup)
+
+If you want to develop on the codebase, run frontend and backend separately.
 
 ### Prerequisites
 
@@ -102,17 +178,7 @@ cp -r out/* ../backend/static/
 
 Then open **http://localhost:8000**.
 
-### Docker (single container)
-
-```bash
-# macOS/Linux
-./scripts/start_mac.sh
-
-# Windows (PowerShell)
-.\scripts\start_windows.ps1
-```
-
-Open **http://localhost:8000**. The SQLite database persists via Docker volume.
+---
 
 ## Environment Variables
 
@@ -175,10 +241,15 @@ finally/
 │   ├── API_CONTRACTS.md        # API schemas, SSE wire format
 │   └── FRONTEND_SPEC.md        # Frontend design system + component spec
 │
-├── test/                       # Playwright E2E tests
 ├── scripts/                    # Docker start/stop scripts
+│   ├── start_mac.sh            # macOS/Linux start script
+│   ├── stop_mac.sh             # macOS/Linux stop script
+│   ├── start_windows.ps1       # Windows PowerShell start script
+│   └── stop_windows.ps1        # Windows PowerShell stop script
+│
 ├── Dockerfile                  # Multi-stage build (Node → Python)
-├── docker-compose.yml
+├── docker-compose.yml          # Optional Docker Compose config
+├── .dockerignore               # Docker build exclusions
 ├── .env                        # Secrets (gitignored)
 ├── .env.example                # Template
 └── README.md
@@ -299,7 +370,7 @@ The Docker container deploys to any container platform:
 
 - AWS App Runner
 - Render
-- Google Cloud Run<img width="1660" height="908" alt="comet_DgfKRlq008" src="https://github.com/user-attachments/assets/9c734e8d-b008-4bed-b048-75d7ecbccea2" />
+- Google Cloud Run
 
 - Any OCI-compatible host
 
@@ -312,3 +383,13 @@ The Docker container deploys to any container platform:
 ---
 
 **Note:** This is a simulated trading environment with virtual money. No real financial transactions occur. For educational purposes only.
+
+## Agent Team
+
+Create an Agent Team to complete the project as defined. Team-members:
+- **Front-end Engineer** — Works on the frontend
+- **Backend API Engineer** — Works on the backend API
+- **Database Engineer** — Works on all DB related code
+- **LLM Engineer** — Works on the LLM calls
+- **Integration Tester** — Builds and runs end-to-end Playwright tests when ready, reporting issues back to the team-members
+- **DevOps Engineer** — Responsible for Docker container and deployment scripts

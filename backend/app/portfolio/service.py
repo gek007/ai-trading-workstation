@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.db import get_db
+from app.errors import insufficient_cash, insufficient_shares, ticker_not_found
 from app.market import PriceCache
 from app.portfolio.models import (
     ExecutedTrade,
     PortfolioResponse,
     Position,
     PositionRow,
-    TradeRow,
 )
 
 
@@ -112,10 +112,12 @@ class PortfolioService:
         # Get current price from cache
         price_update = self._cache.get(ticker)
         if not price_update:
-            raise ValueError(f"Ticker '{ticker}' not found in price cache. Add to watchlist first.")
+            raise ticker_not_found(ticker)
 
-        current_price = price_update.price
-        total_value = quantity * current_price
+        # Round at the boundary before any arithmetic to prevent float drift.
+        current_price = round(price_update.price, 2)
+        quantity = round(quantity, 4)
+        total_value = round(quantity * current_price, 2)
 
         db = get_db()
 
@@ -135,9 +137,7 @@ class PortfolioService:
             # Validate trade
             if side == "buy":
                 if total_value > cash_balance:
-                    raise ValueError(
-                        f"Insufficient cash: need ${total_value:.2f}, have ${cash_balance:.2f}"
-                    )
+                    raise insufficient_cash(ticker, quantity, current_price, total_value, cash_balance)
             else:  # sell
                 # Check if we have enough shares
                 cursor.execute(
@@ -148,13 +148,11 @@ class PortfolioService:
                 owned_quantity = pos_row["quantity"] if pos_row else 0.0
 
                 if quantity > owned_quantity:
-                    raise ValueError(
-                        f"Insufficient shares: trying to sell {quantity}, own {owned_quantity}"
-                    )
+                    raise insufficient_shares(ticker, quantity, owned_quantity)
 
             # Execute trade
             trade_id = str(uuid.uuid4())
-            executed_at = datetime.utcnow().isoformat() + "Z"
+            executed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
             cursor.execute(
                 """
@@ -173,12 +171,12 @@ class PortfolioService:
 
             if side == "buy":
                 if pos_row:
-                    # Update existing position (weighted average cost)
-                    old_quantity = pos_row["quantity"]
-                    old_avg_cost = pos_row["avg_cost"]
-                    new_quantity = old_quantity + quantity
+                    # Weighted average cost — round to 4 dp to keep precision manageable
+                    old_quantity = round(pos_row["quantity"], 4)
+                    old_avg_cost = round(pos_row["avg_cost"], 4)
+                    new_quantity = round(old_quantity + quantity, 4)
                     total_cost = (old_quantity * old_avg_cost) + (quantity * current_price)
-                    new_avg_cost = total_cost / new_quantity
+                    new_avg_cost = round(total_cost / new_quantity, 4)
 
                     cursor.execute(
                         """
@@ -189,7 +187,6 @@ class PortfolioService:
                         (new_quantity, new_avg_cost, executed_at, user_id, ticker),
                     )
                 else:
-                    # Create new position
                     position_id = str(uuid.uuid4())
                     cursor.execute(
                         """
@@ -199,17 +196,16 @@ class PortfolioService:
                         (position_id, user_id, ticker, quantity, current_price, executed_at),
                     )
 
-                # Update cash balance
                 cursor.execute(
                     "UPDATE users_profile SET cash_balance = ? WHERE id = ?",
-                    (cash_balance - total_value, user_id),
+                    (round(cash_balance - total_value, 2), user_id),
                 )
 
             else:  # sell
-                old_quantity = pos_row["quantity"]
-                new_quantity = old_quantity - quantity
+                old_quantity = round(pos_row["quantity"], 4)
+                new_quantity = round(old_quantity - quantity, 4)
 
-                if new_quantity < 0.0001:  # Position closed (allow for floating point)
+                if new_quantity < 0.0001:  # Position closed (allow for float epsilon)
                     cursor.execute(
                         "DELETE FROM positions WHERE user_id = ? AND ticker = ?",
                         (user_id, ticker),
@@ -220,10 +216,9 @@ class PortfolioService:
                         (new_quantity, executed_at, user_id, ticker),
                     )
 
-                # Update cash balance
                 cursor.execute(
                     "UPDATE users_profile SET cash_balance = ? WHERE id = ?",
-                    (cash_balance + total_value, user_id),
+                    (round(cash_balance + total_value, 2), user_id),
                 )
 
             conn.commit()

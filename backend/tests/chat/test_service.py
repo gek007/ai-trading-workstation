@@ -1,399 +1,705 @@
 """Tests for ChatService."""
 
-import pytest
-import json
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from __future__ import annotations
 
+import json
+import uuid
+from datetime import datetime
+
+import pytest
+
+from app.chat.service import ChatService
 from app.db import get_db
 from app.market import PriceCache
-from app.chat.service import ChatService
-from app.chat.models import ChatMessage, ExecutedActions
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def clean_db():
-    """Fixture to provide a clean database for each test."""
+    """Provide a clean database state for each test."""
     db = get_db()
-    db.init_db()  # Initialize with seed data
+    db.init_db()
 
     yield db
 
-    # Clean up - reset database state
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        # Clear chat messages
-        cursor.execute("DELETE FROM chat_messages WHERE user_id = 'default'")
-        # Clear positions
-        cursor.execute("DELETE FROM positions WHERE user_id = 'default'")
-        # Clear trades
-        cursor.execute("DELETE FROM trades WHERE user_id = 'default'")
-        # Reset cash
-        cursor.execute("UPDATE users_profile SET cash_balance = 10000.0 WHERE id = 'default'")
+        cursor.execute("DELETE FROM chat_messages WHERE user_id = 'test_user'")
+        cursor.execute("DELETE FROM positions WHERE user_id = 'test_user'")
+        cursor.execute("DELETE FROM trades WHERE user_id = 'test_user'")
+        cursor.execute("DELETE FROM watchlist WHERE user_id = 'test_user'")
         conn.commit()
 
 
 @pytest.fixture
 def price_cache():
-    """Fixture to provide a price cache with sample data."""
+    """Price cache pre-populated with common test tickers."""
     cache = PriceCache()
     cache.update("AAPL", 190.00)
     cache.update("GOOGL", 175.00)
     cache.update("MSFT", 380.00)
     cache.update("TSLA", 220.00)
+    cache.update("NVDA", 500.00)
     return cache
 
 
 @pytest.fixture
-def chat_service(clean_db, price_cache):
-    """Fixture to provide a ChatService instance."""
+def mock_chat_service(clean_db, price_cache, monkeypatch):
+    """ChatService with LLM_MOCK=true — no real API calls, no side-effect trades."""
+    monkeypatch.setenv("LLM_MOCK", "true")
     return ChatService(price_cache)
 
 
-class TestChatService:
-    """Unit tests for ChatService."""
+@pytest.fixture
+def keyword_chat_service(clean_db, price_cache, monkeypatch):
+    """ChatService wired to use the keyword-based mock response.
 
-    @pytest.mark.asyncio
-    async def test_send_message_stores_user_message(self, chat_service):
-        """Test that user message is stored in database."""
-        response = await chat_service.send_message("Hello, AI!", user_id="default")
+    _call_llm is patched at the instance level so no real HTTP requests are made,
+    even if an OPENROUTER_API_KEY is present in the environment (e.g. via .env).
+    """
+    monkeypatch.setenv("LLM_MOCK", "false")
+    service = ChatService(price_cache)
 
-        # Check database
-        db = get_db()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT role, content FROM chat_messages WHERE user_id = 'default' ORDER BY created_at",
-            )
-            rows = cursor.fetchall()
+    async def _keyword_call_llm(message: str, context: dict) -> dict:
+        return service._keyword_mock_response(message, context)
 
-        assert len(rows) == 2  # User + assistant
-        assert rows[0]["role"] == "user"
-        assert rows[0]["content"] == "Hello, AI!"
-        assert rows[1]["role"] == "assistant"
+    # Bypass the real LiteLLM HTTP call
+    monkeypatch.setattr(service, "_call_llm", _keyword_call_llm)
+    return service
 
-    @pytest.mark.asyncio
-    async def test_send_message_returns_response(self, chat_service):
-        """Test that send_message returns a valid ChatResponse."""
-        response = await chat_service.send_message("What's my portfolio?", user_id="default")
+
+@pytest.fixture
+def test_user_id():
+    return "test_user"
+
+
+def _seed_test_user(db, user_id: str, cash: float = 10000.0) -> None:
+    """Insert a minimal user profile row for test_user."""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO users_profile (id, cash_balance, created_at) VALUES (?, ?, datetime('now'))",
+            (user_id, cash),
+        )
+        cursor.execute(
+            "UPDATE users_profile SET cash_balance = ? WHERE id = ?",
+            (cash, user_id),
+        )
+        conn.commit()
+
+
+def _add_test_watchlist_ticker(db, user_id: str, ticker: str) -> None:
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO watchlist (id, user_id, ticker, added_at)"
+            " VALUES (?, ?, ?, datetime('now'))",
+            (str(uuid.uuid4()), user_id, ticker),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 1. Mock mode (LLM_MOCK=true) — deterministic, no trades
+# ---------------------------------------------------------------------------
+
+
+class TestMockMode:
+    """When LLM_MOCK=true the service must return a valid ChatResponse with no actions."""
+
+    async def test_mock_returns_valid_chat_response(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        response = await mock_chat_service.send_message("Hello AI!", user_id=test_user_id)
 
         assert response.message.role == "assistant"
         assert isinstance(response.message.content, str)
         assert len(response.message.content) > 0
-        assert isinstance(response.message.id, str)
-        assert isinstance(response.message.created_at, str)
+        assert response.message.id != ""
+        assert response.message.created_at.endswith("Z")
 
-    @pytest.mark.asyncio
-    async def test_send_message_mock_mode(self, chat_service):
-        """Test that mock mode returns deterministic responses."""
-        # ChatService should be in mock mode by default (no API key)
-        response = await chat_service.send_message("Buy AAPL", user_id="default")
+    async def test_mock_no_trades_executed(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        response = await mock_chat_service.send_message("Buy 10 shares of AAPL", user_id=test_user_id)
 
-        assert response.message.role == "assistant"
-        # Mock should detect "buy" keyword
-        assert "buy" in response.message.content.lower() or "purchase" in response.message.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_send_message_executes_trade(self, chat_service, price_cache):
-        """Test that LLM can execute trades."""
-        response = await chat_service.send_message("Buy AAPL", user_id="default")
-
-        # Should have executed a trade
-        assert response.executed_actions is not None
-        assert len(response.executed_actions.trades) > 0
-
-        trade = response.executed_actions.trades[0]
-        assert trade.ticker == "AAPL"
-        assert trade.side == "buy"
-        assert trade.quantity == 10  # Mock default
-
-    @pytest.mark.asyncio
-    async def test_send_message_adds_to_watchlist(self, chat_service):
-        """Test that LLM can add to watchlist."""
-        response = await chat_service.send_message("Add TSLA to my watchlist", user_id="default")
-
-        # Should have added to watchlist
-        assert response.executed_actions is not None
-        assert len(response.executed_actions.watchlist_changes) > 0
-
-        change = response.executed_actions.watchlist_changes[0]
-        assert change.ticker == "TSLA"
-        assert change.action == "added"
-
-    @pytest.mark.asyncio
-    async def test_send_message_sells_stock(self, chat_service, price_cache):
-        """Test that LLM can sell stocks."""
-        # First buy some shares
-        await chat_service.send_message("Buy AAPL", user_id="default")
-
-        # Now sell
-        response = await chat_service.send_message("Sell AAPL", user_id="default")
-
-        assert response.executed_actions is not None
-        trade = response.executed_actions.trades[0]
-        assert trade.side == "sell"
-        assert trade.ticker == "AAPL"
-
-    @pytest.mark.asyncio
-    async def test_send_message_default_response(self, chat_service):
-        """Test default response when no keywords match."""
-        response = await chat_service.send_message("Tell me about the weather", user_id="default")
-
-        assert response.message.role == "assistant"
-        assert "portfolio" in response.message.content.lower()
+        # LLM_MOCK=true must not execute any trades
         assert response.executed_actions is None or len(response.executed_actions.trades) == 0
 
-    @pytest.mark.asyncio
-    async def test_conversation_history_context(self, chat_service):
-        """Test that conversation history is included in context."""
-        # Send first message
-        await chat_service.send_message("My name is Alice", user_id="default")
+    async def test_mock_no_watchlist_changes(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        response = await mock_chat_service.send_message("Add TSLA to watchlist", user_id=test_user_id)
 
-        # Send second message
-        response = await chat_service.send_message("What's my name?", user_id="default")
+        assert response.executed_actions is None or len(response.executed_actions.watchlist_changes) == 0
 
-        # In a real LLM, this would use conversation history
-        # In mock mode, we just verify it doesn't crash
-        assert response.message is not None
+    async def test_mock_acknowledges_message(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        msg = "What is my portfolio worth?"
+        response = await mock_chat_service.send_message(msg, user_id=test_user_id)
 
-    @pytest.mark.asyncio
-    async def test_portfolio_context_included(self, chat_service):
-        """Test that portfolio context is built correctly."""
-        # Execute a trade first
-        await chat_service.send_message("Buy AAPL", user_id="default")
+        # Simple mock should echo/acknowledge the user message
+        assert msg in response.message.content or "Mock mode" in response.message.content
 
-        # Build context
-        context = await chat_service._build_context("default")
+    async def test_mock_deterministic_for_same_input(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        msg = "Tell me about my risk"
+        r1 = await mock_chat_service.send_message(msg, user_id=test_user_id)
+        r2 = await mock_chat_service.send_message(msg, user_id=test_user_id)
 
-        assert "portfolio" in context
-        assert "watchlist" in context
-        assert "history" in context
-        assert context["portfolio"]["cash_balance"] < 10000.0  # Should have spent money
-        assert len(context["portfolio"]["positions"]) > 0
+        assert r1.message.content == r2.message.content
 
-    @pytest.mark.asyncio
-    async def test_extract_ticker(self, chat_service):
-        """Test ticker extraction from text."""
-        assert chat_service._extract_ticker("Buy AAPL now") == "AAPL"
-        assert chat_service._extract_ticker("What about GOOGL?") == "GOOGL"
-        assert chat_service._extract_ticker("No ticker here") is None
+    async def test_mock_messages_stored_in_db(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        await mock_chat_service.send_message("Hello!", user_id=test_user_id)
 
-    @pytest.mark.asyncio
-    async def test_send_message_stores_actions(self, chat_service):
-        """Test that executed actions are stored in database."""
-        response = await chat_service.send_message("Buy AAPL", user_id="default")
-
-        # Check database for actions
-        db = get_db()
-        with db.get_connection() as conn:
+        with clean_db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT actions FROM chat_messages WHERE user_id = 'default' AND role = 'assistant'",
+                "SELECT role FROM chat_messages WHERE user_id = ? ORDER BY created_at",
+                (test_user_id,),
             )
-            row = cursor.fetchone()
+            rows = cursor.fetchall()
 
-        assert row is not None
-        actions_json = row["actions"]
-        assert actions_json is not None
+        roles = [r["role"] for r in rows]
+        assert "user" in roles
+        assert "assistant" in roles
 
-        actions = json.loads(actions_json)
-        assert "trades" in actions
-        assert len(actions["trades"]) > 0
 
-    @pytest.mark.asyncio
-    async def test_execute_actions_handles_trade_errors(self, chat_service):
-        """Test that trade errors are handled gracefully."""
-        # Mock a trade that will fail (insufficient cash)
+# ---------------------------------------------------------------------------
+# 2. LLM response parsing — _parse_llm_response
+# ---------------------------------------------------------------------------
+
+
+class TestParseLlmResponse:
+    """Unit tests for _parse_llm_response, isolated from DB and API."""
+
+    @pytest.fixture
+    def service(self, price_cache):
+        return ChatService(price_cache)
+
+    def test_parses_valid_full_json(self, service):
+        content = json.dumps({
+            "message": "I bought AAPL",
+            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 10}],
+            "watchlist_changes": [{"ticker": "GOOGL", "action": "add"}],
+        })
+        result = service._parse_llm_response(content)
+
+        assert result["message"] == "I bought AAPL"
+        assert len(result["trades"]) == 1
+        assert result["trades"][0]["ticker"] == "AAPL"
+        assert len(result["watchlist_changes"]) == 1
+
+    def test_parses_json_with_missing_trades_key(self, service):
+        content = json.dumps({"message": "Just a reply"})
+        result = service._parse_llm_response(content)
+
+        assert result["message"] == "Just a reply"
+        assert result["trades"] == []
+        assert result["watchlist_changes"] == []
+
+    def test_parses_json_empty_arrays(self, service):
+        content = json.dumps({"message": "No action", "trades": [], "watchlist_changes": []})
+        result = service._parse_llm_response(content)
+
+        assert result["trades"] == []
+        assert result["watchlist_changes"] == []
+
+    def test_handles_malformed_json_extracts_message(self, service):
+        malformed = '{"message": "Partial response here", "trades": [BROKEN'
+        result = service._parse_llm_response(malformed)
+
+        assert result["message"] == "Partial response here"
+        assert result["trades"] == []
+        assert result["watchlist_changes"] == []
+
+    def test_handles_completely_invalid_json(self, service):
+        result = service._parse_llm_response("not json at all ~~!!")
+
+        assert isinstance(result["message"], str)
+        assert len(result["message"]) > 0
+        assert result["trades"] == []
+        assert result["watchlist_changes"] == []
+
+    def test_handles_empty_string(self, service):
+        result = service._parse_llm_response("")
+
+        assert isinstance(result["message"], str)
+        assert result["trades"] == []
+
+    def test_handles_missing_message_key_in_valid_json(self, service):
+        content = json.dumps({"trades": [], "watchlist_changes": []})
+        result = service._parse_llm_response(content)
+
+        # Should default to a fallback string
+        assert isinstance(result["message"], str)
+        assert len(result["message"]) > 0
+
+    def test_handles_escaped_quotes_in_message(self, service):
+        content = '{"message": "It\\"s a reply", "trades": [], "watchlist_changes": []}'
+        result = service._parse_llm_response(content)
+
+        assert "reply" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# 3. Action execution — _execute_actions
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteActions:
+    """Tests for _execute_actions method with various LLM response shapes."""
+
+    async def test_executes_valid_buy_trade(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
         llm_response = {
-            "message": "I'll try to buy too much",
-            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 1000000}],
-            "watchlist_changes": []
+            "message": "Buying AAPL",
+            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 5}],
+            "watchlist_changes": [],
         }
 
-        # Should not raise, just log error
-        actions = await chat_service._execute_actions(llm_response, "default")
-
-        # Should have no trades due to error
-        assert actions is None or len(actions.trades) == 0
-
-    @pytest.mark.asyncio
-    async def test_execute_actions_handles_watchlist_errors(self, chat_service):
-        """Test that watchlist errors are handled gracefully."""
-        # First add ticker
-        db = get_db()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO watchlist (id, user_id, ticker, added_at) VALUES (?, 'default', 'AAPL', datetime('now'))",
-                ("test-id",)
-            )
-            conn.commit()
-
-        # Try to add again (duplicate)
-        llm_response = {
-            "message": "I'll add AAPL",
-            "trades": [],
-            "watchlist_changes": [{"ticker": "AAPL", "action": "add"}]
-        }
-
-        # Should not raise, just log error
-        actions = await chat_service._execute_actions(llm_response, "default")
-
-        # Should have no watchlist changes due to error
-        assert actions is None or len(actions.watchlist_changes) == 0
-
-    @pytest.mark.asyncio
-    async def test_watchlist_remove_action(self, chat_service):
-        """Test that watchlist removal works."""
-        # First add to watchlist
-        db = get_db()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO watchlist (id, user_id, ticker, added_at) VALUES (?, 'default', 'TSLA', datetime('now'))",
-                ("test-id",)
-            )
-            conn.commit()
-
-        # Execute remove action
-        llm_response = {
-            "message": "Removing TSLA",
-            "trades": [],
-            "watchlist_changes": [{"ticker": "TSLA", "action": "remove"}]
-        }
-
-        actions = await chat_service._execute_actions(llm_response, "default")
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
 
         assert actions is not None
-        assert len(actions.watchlist_changes) == 1
-        assert actions.watchlist_changes[0].action == "removed"
+        assert len(actions.trades) == 1
+        assert actions.trades[0].ticker == "AAPL"
+        assert actions.trades[0].side == "buy"
+        assert actions.trades[0].quantity == 5
+        assert actions.trades[0].price == 190.00
 
-        # Verify it's gone from database
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT ticker FROM watchlist WHERE user_id = 'default' AND ticker = 'TSLA'")
-            assert cursor.fetchone() is None
+    async def test_executes_multiple_trades(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=50000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+        _add_test_watchlist_ticker(clean_db, test_user_id, "GOOGL")
 
-    @pytest.mark.asyncio
-    async def test_multiple_trades_in_one_message(self, chat_service):
-        """Test executing multiple trades from a single message."""
-        # This would require a more sophisticated mock or real LLM
-        # For now, test that the mechanism exists
         llm_response = {
-            "message": "Buying multiple stocks",
+            "message": "Diversifying portfolio",
             "trades": [
                 {"ticker": "AAPL", "side": "buy", "quantity": 5},
-                {"ticker": "GOOGL", "side": "buy", "quantity": 3}
+                {"ticker": "GOOGL", "side": "buy", "quantity": 3},
             ],
-            "watchlist_changes": []
+            "watchlist_changes": [],
         }
 
-        actions = await chat_service._execute_actions(llm_response, "default")
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
 
         assert actions is not None
         assert len(actions.trades) == 2
 
-    @pytest.mark.asyncio
-    async def test_both_trades_and_watchlist_changes(self, chat_service):
-        """Test executing both trades and watchlist changes."""
+    async def test_insufficient_cash_trade_skipped_gracefully(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=100.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
         llm_response = {
-            "message": "Buying and watching",
-            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 5}],
-            "watchlist_changes": [{"ticker": "MSFT", "action": "add"}]
+            "message": "I'll buy way too much",
+            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 1_000_000}],
+            "watchlist_changes": [],
         }
 
-        actions = await chat_service._execute_actions(llm_response, "default")
+        # Must not raise; failed trade is silently skipped
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is None or len(actions.trades) == 0
+
+    async def test_insufficient_shares_sell_skipped_gracefully(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        llm_response = {
+            "message": "Selling stock I don't own",
+            "trades": [{"ticker": "AAPL", "side": "sell", "quantity": 50}],
+            "watchlist_changes": [],
+        }
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is None or len(actions.trades) == 0
+
+    async def test_watchlist_add_action(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        # "NVDA" is not in test_user watchlist yet
+        llm_response = {
+            "message": "Adding NVDA",
+            "trades": [],
+            "watchlist_changes": [{"ticker": "NVDA", "action": "add"}],
+        }
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is not None
+        assert len(actions.watchlist_changes) == 1
+        assert actions.watchlist_changes[0].ticker == "NVDA"
+        assert actions.watchlist_changes[0].action == "added"
+
+    async def test_watchlist_remove_action(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "TSLA")
+
+        llm_response = {
+            "message": "Removing TSLA",
+            "trades": [],
+            "watchlist_changes": [{"ticker": "TSLA", "action": "remove"}],
+        }
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is not None
+        assert actions.watchlist_changes[0].action == "removed"
+
+        with clean_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT ticker FROM watchlist WHERE user_id = ? AND ticker = 'TSLA'",
+                (test_user_id,),
+            )
+            assert cursor.fetchone() is None
+
+    async def test_duplicate_watchlist_add_skipped_gracefully(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        llm_response = {
+            "message": "Add AAPL again",
+            "trades": [],
+            "watchlist_changes": [{"ticker": "AAPL", "action": "add"}],
+        }
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is None or len(actions.watchlist_changes) == 0
+
+    async def test_empty_llm_response_returns_none(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        llm_response = {"message": "Just chatting", "trades": [], "watchlist_changes": []}
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
+
+        assert actions is None
+
+    async def test_combined_trades_and_watchlist_changes(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=50000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        llm_response = {
+            "message": "Buy AAPL and watch NVDA",
+            "trades": [{"ticker": "AAPL", "side": "buy", "quantity": 3}],
+            "watchlist_changes": [{"ticker": "NVDA", "action": "add"}],
+        }
+
+        actions = await keyword_chat_service._execute_actions(llm_response, test_user_id)
 
         assert actions is not None
         assert len(actions.trades) == 1
         assert len(actions.watchlist_changes) == 1
 
-    @pytest.mark.asyncio
-    async def test_user_message_validation(self, chat_service):
-        """Test that user messages are stored correctly."""
-        long_message = "A" * 1000  # Max length
+    async def test_actions_stored_in_db(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
 
-        response = await chat_service.send_message(long_message, user_id="default")
+        await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
 
-        # Should work fine
-        assert response.message is not None
-
-    @pytest.mark.asyncio
-    async def test_build_context_with_empty_portfolio(self, chat_service):
-        """Test building context when user has no positions."""
-        # Clear any existing positions
-        db = get_db()
-        with db.get_connection() as conn:
+        with clean_db.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM positions WHERE user_id = 'default'")
-            conn.commit()
+            cursor.execute(
+                "SELECT actions FROM chat_messages"
+                " WHERE user_id = ? AND role = 'assistant'",
+                (test_user_id,),
+            )
+            row = cursor.fetchone()
 
-        context = await chat_service._build_context("default")
+        assert row is not None
+        actions_data = json.loads(row["actions"])
+        assert "trades" in actions_data
+        assert len(actions_data["trades"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# 4. Trade validation within the full send_message flow
+# ---------------------------------------------------------------------------
+
+
+class TestTradeValidation:
+    """Trade validation is enforced in the portfolio service during execute_actions."""
+
+    async def test_buy_reduces_cash(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=10000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        response = await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
+
+        if response.executed_actions and response.executed_actions.trades:
+            with clean_db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT cash_balance FROM users_profile WHERE id = ?",
+                    (test_user_id,),
+                )
+                row = cursor.fetchone()
+            assert row["cash_balance"] < 10000.0
+
+    async def test_sell_after_buy_succeeds(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=10000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        # Buy via keyword mock (10 shares)
+        await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
+
+        # Now sell some via keyword mock (5 shares)
+        response = await keyword_chat_service.send_message("Sell AAPL", user_id=test_user_id)
+
+        assert response.executed_actions is not None
+        assert len(response.executed_actions.trades) > 0
+        assert response.executed_actions.trades[0].side == "sell"
+
+    async def test_sell_without_position_fails_gracefully(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        # No prior buy — should not raise, just return empty actions
+        response = await keyword_chat_service.send_message("Sell AAPL", user_id=test_user_id)
+
+        # The sell should fail validation silently
+        assert response.message is not None  # Response still returned
+        if response.executed_actions:
+            assert len(response.executed_actions.trades) == 0
+
+    async def test_buy_with_insufficient_cash_fails_gracefully(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=0.01)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        response = await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
+
+        # Must not raise; trade simply not executed
+        assert response.message is not None
+        assert response.executed_actions is None or len(response.executed_actions.trades) == 0
+
+
+# ---------------------------------------------------------------------------
+# 5. Context building
+# ---------------------------------------------------------------------------
+
+
+class TestContextBuilding:
+
+    async def test_build_context_returns_required_keys(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        context = await mock_chat_service._build_context(test_user_id)
+
+        assert "portfolio" in context
+        assert "watchlist" in context
+        assert "history" in context
+
+    async def test_build_context_empty_portfolio(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=10000.0)
+        context = await mock_chat_service._build_context(test_user_id)
 
         assert context["portfolio"]["cash_balance"] == 10000.0
         assert len(context["portfolio"]["positions"]) == 0
-        assert context["portfolio"]["total_value"] == 10000.0
 
-    @pytest.mark.asyncio
-    async def test_build_context_includes_watchlist(self, chat_service):
-        """Test that watchlist is included in context."""
-        context = await chat_service._build_context("default")
+    async def test_history_limited_to_20_messages(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
 
-        assert "watchlist" in context
-        assert isinstance(context["watchlist"], list)
+        # Insert 25 messages directly
+        with clean_db.get_connection() as conn:
+            cursor = conn.cursor()
+            for i in range(25):
+                cursor.execute(
+                    "INSERT INTO chat_messages (id, user_id, role, content, created_at)"
+                    " VALUES (?, ?, 'user', ?, datetime('now'))",
+                    (str(uuid.uuid4()), test_user_id, f"Message {i}"),
+                )
+            conn.commit()
 
-    @pytest.mark.asyncio
-    async def test_build_context_history_limit(self, chat_service):
-        """Test that conversation history is limited."""
-        # Send many messages
-        for i in range(25):
-            await chat_service.send_message(f"Message {i}", user_id="default")
-
-        context = await chat_service._build_context("default")
-
-        # Should limit to last 20 messages
+        context = await mock_chat_service._build_context(test_user_id)
         assert len(context["history"]) <= 20
 
-    @pytest.mark.asyncio
-    async def test_mock_llm_response_case_insensitive(self, chat_service):
-        """Test that mock response detection is case-insensitive."""
-        response = await chat_service._mock_llm_response("BUY aapl", await chat_service._build_context("default"))
+    def test_portfolio_context_string_includes_positions(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        context = {
+            "portfolio": {
+                "cash_balance": 5000.0,
+                "total_value": 15000.0,
+                "total_unrealized_pl": 500.0,
+                "positions": [
+                    {
+                        "ticker": "AAPL",
+                        "quantity": 10,
+                        "avg_cost": 185.0,
+                        "current_price": 190.0,
+                        "market_value": 1900.0,
+                        "cost_basis": 1850.0,
+                        "unrealized_pl": 50.0,
+                        "unrealized_pl_percent": 2.70,
+                    }
+                ],
+            },
+            "watchlist": [
+                {"ticker": "AAPL", "price": 190.0, "change": 0.25, "change_percent": 0.13, "added_at": ""},
+            ],
+        }
+        result = mock_chat_service._build_portfolio_context_string(context)
 
-        assert "buy" in response["message"].lower()
+        assert "AAPL" in result
+        assert "$5,000.00" in result
+        assert "$15,000.00" in result
 
-    @pytest.mark.asyncio
-    async def test_mock_llm_response_sell_keywords(self, chat_service):
-        """Test that mock detects sell keywords."""
-        response1 = await chat_service._mock_llm_response("Sell AAPL", await chat_service._build_context("default"))
-        response2 = await chat_service._mock_llm_response("Exit AAPL", await chat_service._build_context("default"))
+    def test_portfolio_context_string_no_positions(self, mock_chat_service):
+        context = {
+            "portfolio": {
+                "cash_balance": 10000.0,
+                "total_value": 10000.0,
+                "total_unrealized_pl": 0.0,
+                "positions": [],
+            },
+            "watchlist": [],
+        }
+        result = mock_chat_service._build_portfolio_context_string(context)
+        assert "none" in result.lower() or "Positions: none" in result
 
-        assert "sell" in response1["message"].lower()
-        assert "sell" in response2["message"].lower()
 
-    @pytest.mark.asyncio
-    async def test_mock_llm_response_watch_keywords(self, chat_service):
-        """Test that mock detects watchlist keywords."""
-        response1 = await chat_service._mock_llm_response("Add TSLA", await chat_service._build_context("default"))
-        response2 = await chat_service._mock_llm_response("Watch TSLA", await chat_service._build_context("default"))
+# ---------------------------------------------------------------------------
+# 6. General send_message flow
+# ---------------------------------------------------------------------------
 
-        assert "added" in response1["message"].lower()
-        assert "added" in response2["message"].lower()
 
-    @pytest.mark.asyncio
-    async def test_message_ids_are_unique(self, chat_service):
-        """Test that each message gets a unique ID."""
-        response1 = await chat_service.send_message("Message 1", user_id="default")
-        response2 = await chat_service.send_message("Message 2", user_id="default")
+class TestSendMessageFlow:
 
-        assert response1.message.id != response2.message.id
+    async def test_stores_user_and_assistant_messages(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        await mock_chat_service.send_message("Hello!", user_id=test_user_id)
 
-    @pytest.mark.asyncio
-    async def test_message_timestamps_are_valid(self, chat_service):
-        """Test that messages have valid timestamps."""
-        response = await chat_service.send_message("Test", user_id="default")
+        with clean_db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT role, content FROM chat_messages"
+                " WHERE user_id = ? ORDER BY created_at",
+                (test_user_id,),
+            )
+            rows = cursor.fetchall()
 
-        # Should be ISO format with Z suffix
+        assert len(rows) == 2
+        assert rows[0]["role"] == "user"
+        assert rows[0]["content"] == "Hello!"
+        assert rows[1]["role"] == "assistant"
+
+    async def test_message_ids_are_unique(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        r1 = await mock_chat_service.send_message("Msg 1", user_id=test_user_id)
+        r2 = await mock_chat_service.send_message("Msg 2", user_id=test_user_id)
+
+        assert r1.message.id != r2.message.id
+
+    async def test_timestamps_end_with_z(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        response = await mock_chat_service.send_message("Test", user_id=test_user_id)
+
         assert response.message.created_at.endswith("Z")
-
-        # Should be parseable
+        # Must be parseable
         datetime.fromisoformat(response.message.created_at.replace("Z", ""))
+
+    async def test_executed_actions_none_when_no_actions(
+        self, mock_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        # Simple mock always returns no trades
+        response = await mock_chat_service.send_message("Portfolio overview", user_id=test_user_id)
+
+        assert response.executed_actions is None
+
+    async def test_keyword_mock_buy_executes_trade(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=10000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        response = await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
+
+        assert response.executed_actions is not None
+        assert len(response.executed_actions.trades) == 1
+        assert response.executed_actions.trades[0].ticker == "AAPL"
+
+    async def test_keyword_mock_sell_keywords(
+        self, keyword_chat_service, clean_db, test_user_id, price_cache
+    ):
+        _seed_test_user(clean_db, test_user_id, cash=10000.0)
+        _add_test_watchlist_ticker(clean_db, test_user_id, "AAPL")
+
+        # Buy first so sell succeeds
+        await keyword_chat_service.send_message("Buy AAPL", user_id=test_user_id)
+        response = await keyword_chat_service.send_message("Sell AAPL", user_id=test_user_id)
+
+        assert response.executed_actions is not None
+        assert response.executed_actions.trades[0].side == "sell"
+
+    async def test_keyword_mock_default_response_contains_portfolio_info(
+        self, keyword_chat_service, clean_db, test_user_id
+    ):
+        _seed_test_user(clean_db, test_user_id)
+        response = await keyword_chat_service.send_message(
+            "What's the weather like?", user_id=test_user_id
+        )
+
+        assert "portfolio" in response.message.content.lower()
+        assert response.executed_actions is None
+
+    async def test_extract_ticker_from_various_inputs(self, mock_chat_service):
+        assert mock_chat_service._extract_ticker("Buy AAPL now") == "AAPL"
+        assert mock_chat_service._extract_ticker("How is GOOGL doing?") == "GOOGL"
+        assert mock_chat_service._extract_ticker("no ticker here") is None

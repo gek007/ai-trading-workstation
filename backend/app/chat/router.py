@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, status
 
 from app.chat.models import ChatRequest, ChatResponse
 from app.chat.service import ChatService
 from app.db import get_db
 from app.market import PriceCache
+
+logger = logging.getLogger(__name__)
 
 
 def create_chat_router(price_cache: PriceCache) -> APIRouter:
@@ -30,20 +34,22 @@ def create_chat_router(price_cache: PriceCache) -> APIRouter:
 
         try:
             return await service.send_message(request.message, user_id="default")
-
         except ValueError as e:
-            # Business logic validation errors
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(e),
             )
-        except Exception as e:
-            # Log the actual exception for debugging
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Unhandled error in chat endpoint")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to process chat message: {type(e).__name__}: {str(e)}",
+                detail={
+                    "error": {
+                        "code": "INTERNAL_ERROR",
+                        "message": "Failed to process chat message",
+                        "details": None,
+                    }
+                },
             )
 
     return router

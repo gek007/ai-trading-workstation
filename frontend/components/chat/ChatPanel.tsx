@@ -69,7 +69,8 @@ export default function ChatPanel() {
                       ))}
                       {msg.executed_actions.watchlist_changes.map((c, i) => (
                         <div key={i} className="text-xs font-mono text-accent-blue">
-                          {c.action === "added" ? "+ Added" : "− Removed"} {c.ticker} to watchlist
+                          {c.action === "added" ? "+ Added" : "− Removed"} {c.ticker}{" "}
+                          {c.action === "added" ? "to" : "from"} watchlist
                         </div>
                       ))}
                     </div>

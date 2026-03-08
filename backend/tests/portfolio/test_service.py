@@ -1,42 +1,36 @@
 """Tests for PortfolioService."""
 
+
 import pytest
-from datetime import datetime
 
 from app.db import get_db
 from app.market import PriceCache
 from app.portfolio.service import PortfolioService
-from app.portfolio.models import Position, ExecutedTrade
 
 
 @pytest.fixture
 def clean_db():
     """Fixture to provide a clean database for each test."""
     db = get_db()
+    db.init_db()
 
-    # Clean up before test - reset database state
-    with db.get_connection() as conn:
+    def reset(conn):
         cursor = conn.cursor()
-        # Reset cash balance
-        cursor.execute("UPDATE users_profile SET cash_balance = 10000.0 WHERE id = 'default'")
-        # Clear positions
+        cursor.execute(
+            "INSERT OR REPLACE INTO users_profile (id, cash_balance, created_at) "
+            "VALUES ('default', 10000.0, datetime('now'))"
+        )
         cursor.execute("DELETE FROM positions WHERE user_id = 'default'")
-        # Clear trades
         cursor.execute("DELETE FROM trades WHERE user_id = 'default'")
         conn.commit()
+
+    with db.get_connection() as conn:
+        reset(conn)
 
     yield db
 
-    # Clean up after test
     with db.get_connection() as conn:
-        cursor = conn.cursor()
-        # Reset cash balance
-        cursor.execute("UPDATE users_profile SET cash_balance = 10000.0 WHERE id = 'default'")
-        # Clear positions
-        cursor.execute("DELETE FROM positions WHERE user_id = 'default'")
-        # Clear trades
-        cursor.execute("DELETE FROM trades WHERE user_id = 'default'")
-        conn.commit()
+        reset(conn)
 
 
 @pytest.fixture
@@ -103,8 +97,10 @@ class TestPortfolioService:
 
     def test_execute_buy_trade_insufficient_cash(self, portfolio_service, price_cache):
         """Test buy trade with insufficient cash."""
-        with pytest.raises(ValueError, match="Insufficient cash"):
+        from app.errors import AppError
+        with pytest.raises(AppError) as exc_info:
             portfolio_service.execute_trade("AAPL", 100, "buy")  # Needs $19,000, only have $10,000
+        assert exc_info.value.code == "INSUFFICIENT_CASH"
 
     def test_execute_buy_trade_exact_cash(self, portfolio_service, price_cache):
         """Test buy trade using exactly all available cash."""
@@ -135,17 +131,18 @@ class TestPortfolioService:
 
     def test_execute_sell_trade_insufficient_shares(self, portfolio_service, price_cache):
         """Test sell trade with insufficient shares."""
-        # Buy only 10 shares
+        from app.errors import AppError
         portfolio_service.execute_trade("AAPL", 10, "buy")
-
-        # Try to sell 15
-        with pytest.raises(ValueError, match="Insufficient shares"):
+        with pytest.raises(AppError) as exc_info:
             portfolio_service.execute_trade("AAPL", 15, "sell")
+        assert exc_info.value.code == "INSUFFICIENT_SHARES"
 
     def test_execute_sell_trade_no_position(self, portfolio_service, price_cache):
         """Test sell trade when no position exists."""
-        with pytest.raises(ValueError, match="Insufficient shares"):
+        from app.errors import AppError
+        with pytest.raises(AppError) as exc_info:
             portfolio_service.execute_trade("AAPL", 10, "sell")
+        assert exc_info.value.code == "INSUFFICIENT_SHARES"
 
     def test_execute_sell_full_position(self, portfolio_service, price_cache):
         """Test selling entire position closes it."""
@@ -230,8 +227,10 @@ class TestPortfolioService:
 
     def test_execute_trade_ticker_not_in_cache(self, portfolio_service):
         """Test trade execution for ticker not in price cache."""
-        with pytest.raises(ValueError, match="not found in price cache"):
+        from app.errors import AppError
+        with pytest.raises(AppError) as exc_info:
             portfolio_service.execute_trade("INVALID", 10, "buy")
+        assert exc_info.value.code == "TICKER_NOT_FOUND"
 
     def test_fractional_shares_buy(self, portfolio_service, price_cache):
         """Test buying fractional shares."""
