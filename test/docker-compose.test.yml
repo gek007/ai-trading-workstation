@@ -1,0 +1,31 @@
+# Docker Compose for E2E testing — spins up the full app with mock LLM
+# and a deterministic market simulator seed so tests are reproducible.
+#
+# Usage:
+#   docker compose -f test/docker-compose.test.yml up --build -d
+#   cd test && npx playwright test
+#   docker compose -f test/docker-compose.test.yml down -v
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_MOCK=true
+      - MARKET_SIM_SEED=42
+      - DB_PATH=/app/db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - test-db:/app/db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  test-db:

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from app.market.cache import PriceCache
-from app.market.stream import create_stream_router, _generate_events
+from app.market.stream import _generate_events, create_stream_router
 
 
 class MockRequest:
@@ -95,12 +95,24 @@ class TestStreamGenerator:
                 break
 
         if data_event:
-            # Verify JSON format
-            json_str = data_event.replace("data: ", "").strip()
+            # Extract data line from potentially multi-line SSE event
+            # Format: "event: price_update\ndata: {payload}\n\n"
+            data_line = next(
+                (line for line in data_event.splitlines() if line.startswith("data: ")),
+                None,
+            )
+            assert data_line is not None, f"No data line found in event: {data_event!r}"
+            json_str = data_line[len("data: "):]
             data = json.loads(json_str)
-            assert "AAPL" in data
-            assert data["AAPL"]["ticker"] == "AAPL"
-            assert data["AAPL"]["price"] == 190.50
+            # Payload is {"tickers": [...]}
+            tickers_list = data.get("tickers", data)
+            aapl = next(
+                (t for t in tickers_list if t["ticker"] == "AAPL"),
+                None,
+            ) if isinstance(tickers_list, list) else tickers_list.get("AAPL")
+            assert aapl is not None
+            assert aapl["ticker"] == "AAPL"
+            assert aapl["price"] == 190.50
 
 
 @pytest.mark.asyncio

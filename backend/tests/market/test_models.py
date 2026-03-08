@@ -52,9 +52,9 @@ class TestPriceUpdate:
         assert update.direction == "down"
 
     def test_direction_flat(self):
-        """Test direction calculation (flat)."""
+        """Test direction calculation (unchanged)."""
         update = PriceUpdate(ticker="AAPL", price=190.00, previous_price=190.00, timestamp=1234567890.0)
-        assert update.direction == "flat"
+        assert update.direction == "unchanged"
 
     def test_to_dict(self):
         """Test serialization to dictionary."""
@@ -64,9 +64,10 @@ class TestPriceUpdate:
         assert result["ticker"] == "AAPL"
         assert result["price"] == 190.50
         assert result["previous_price"] == 190.00
-        assert result["timestamp"] == 1234567890.0
+        # timestamp is now ISO 8601 UTC string
+        assert result["timestamp"] == "2009-02-13T23:31:30.000Z"
         assert result["change"] == 0.50
-        assert result["change_percent"] == 0.2632  # (0.50 / 190.00) * 100
+        assert result["change_percent"] == 0.26  # rounded to 2 dp: (0.50 / 190.00) * 100
         assert result["direction"] == "up"
 
     def test_immutability(self):

@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
-from app.db import get_db
-from app.market import PriceCache
 from app.chat.models import (
     ChatMessage,
-    ChatRequest,
     ChatResponse,
     ExecutedActions,
     ExecutedTrade,
     WatchlistChange,
 )
+from app.db import get_db
+from app.market import PriceCache
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -30,10 +33,11 @@ class ChatService:
         """Process a user message through the LLM and execute any actions.
 
         The LLM may auto-execute trades or modify the watchlist based on the conversation.
+        Raises RuntimeError if the LLM call fails (when not in mock mode).
         """
         # 1. Store user message in database
         user_message_id = str(uuid.uuid4())
-        user_created_at = datetime.utcnow().isoformat() + "Z"
+        user_created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         db = get_db()
         with db.get_connection() as conn:
@@ -52,7 +56,7 @@ class ChatService:
 
         # 3. Call LLM (or mock)
         if self._mock_mode:
-            llm_response = await self._mock_llm_response(message, context)
+            llm_response = self._simple_mock_response(message)
         else:
             llm_response = await self._call_llm(message, context)
 
@@ -61,7 +65,7 @@ class ChatService:
 
         # 5. Store assistant message in database
         assistant_message_id = str(uuid.uuid4())
-        assistant_created_at = datetime.utcnow().isoformat() + "Z"
+        assistant_created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         actions_json = json.dumps(executed_actions.model_dump()) if executed_actions else None
 
         with db.get_connection() as conn:
@@ -71,7 +75,14 @@ class ChatService:
                 INSERT INTO chat_messages (id, user_id, role, content, actions, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (assistant_message_id, user_id, "assistant", llm_response["message"], actions_json, assistant_created_at),
+                (
+                    assistant_message_id,
+                    user_id,
+                    "assistant",
+                    llm_response["message"],
+                    actions_json,
+                    assistant_created_at,
+                ),
             )
             conn.commit()
 
@@ -88,26 +99,22 @@ class ChatService:
 
     async def _build_context(self, user_id: str = "default") -> dict:
         """Build the context for the LLM: portfolio + conversation history."""
-        # Import here to avoid circular dependency
         from app.portfolio.service import PortfolioService
         from app.watchlist.service import WatchlistService
 
         portfolio_service = PortfolioService(self._cache)
         watchlist_service = WatchlistService(self._cache)
 
-        # Get portfolio state
         portfolio = portfolio_service.get_portfolio(user_id)
-
-        # Get watchlist
         watchlist = watchlist_service.get_watchlist(user_id)
 
-        # Get conversation history (last 20 messages)
+        # Get last 20 messages as conversation history
         db = get_db()
         with db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT id, role, content, created_at
+                SELECT role, content
                 FROM chat_messages
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -128,155 +135,191 @@ class ChatService:
             "history": history,
         }
 
-    async def _mock_llm_response(self, user_message: str, context: dict) -> dict:
-        """Return a deterministic mock LLM response for testing."""
-        # Simple keyword-based mock responses
-        msg_lower = user_message.lower()
+    def _build_portfolio_context_string(self, context: dict) -> str:
+        """Build a formatted portfolio context string for the LLM system prompt."""
+        portfolio = context["portfolio"]
+        lines = [
+            "Portfolio:",
+            f"- Cash: ${portfolio['cash_balance']:,.2f}",
+            f"- Total Value: ${portfolio['total_value']:,.2f}",
+            f"- Unrealized P&L: ${portfolio['total_unrealized_pl']:,.2f}",
+        ]
 
-        # Mock trading
-        if any(word in msg_lower for word in ["buy", "purchase"]):
-            ticker = self._extract_ticker(user_message) or "AAPL"
-            return {
-                "message": f"I'll buy 10 shares of {ticker} at the current price for you.",
-                "trades": [
-                    {
-                        "ticker": ticker,
-                        "side": "buy",
-                        "quantity": 10,
-                    }
-                ],
-                "watchlist_changes": [],
-            }
+        if portfolio["positions"]:
+            lines.append("- Positions:")
+            for pos in portfolio["positions"]:
+                pl_sign = "+" if pos["unrealized_pl"] >= 0 else ""
+                lines.append(
+                    f"  {pos['ticker']} x{pos['quantity']} @ ${pos['current_price']:.2f}"
+                    f" (cost ${pos['avg_cost']:.2f})"
+                    f" = ${pos['market_value']:,.2f}"
+                    f" unrealized P&L: {pl_sign}${pos['unrealized_pl']:,.2f}"
+                    f" ({pl_sign}{pos['unrealized_pl_percent']:.2f}%)"
+                )
+        else:
+            lines.append("- Positions: none")
 
-        # Mock sell
-        elif any(word in msg_lower for word in ["sell", "exit"]):
-            ticker = self._extract_ticker(user_message) or "AAPL"
-            return {
-                "message": f"Selling 5 shares of {ticker} at the current price.",
-                "trades": [
-                    {
-                        "ticker": ticker,
-                        "side": "sell",
-                        "quantity": 5,
-                    }
-                ],
-                "watchlist_changes": [],
-            }
+        watchlist = context["watchlist"]
+        if watchlist:
+            wl_items = []
+            for item in watchlist:
+                change_sign = "+" if item["change_percent"] >= 0 else ""
+                wl_items.append(
+                    f"{item['ticker']} (${item['price']:.2f}, {change_sign}{item['change_percent']:.2f}%)"
+                )
+            lines.append(f"Watchlist: {', '.join(wl_items)}")
+        else:
+            lines.append("Watchlist: empty")
 
-        # Mock add to watchlist
-        elif any(word in msg_lower for word in ["add", "watch"]):
-            ticker = self._extract_ticker(user_message) or "MSFT"
-            return {
-                "message": f"I've added {ticker} to your watchlist so we can monitor it.",
-                "trades": [],
-                "watchlist_changes": [
-                    {
-                        "ticker": ticker,
-                        "action": "add",
-                    }
-                ],
-            }
+        return "\n".join(lines)
 
-        # Default response
-        portfolio_value = context["portfolio"]["total_value"]
-        cash = context["portfolio"]["cash_balance"]
-        num_positions = len(context["portfolio"]["positions"])
+    def _simple_mock_response(self, user_message: str) -> dict:
+        """Return a deterministic mock LLM response for E2E testing.
 
+        LLM_MOCK=true mode: simple acknowledgment, no trades or watchlist changes.
+        This keeps E2E tests fast and side-effect-free.
+        """
         return {
-            "message": f"Your portfolio is currently valued at ${portfolio_value:,.2f} with ${cash:,.2f} in cash. You have {num_positions} position(s). How can I help you today?",
+            "message": f"I received your message: '{user_message}'. (Mock mode — no trades executed.)",
             "trades": [],
             "watchlist_changes": [],
         }
 
+    def _keyword_mock_response(self, user_message: str, context: dict) -> dict:
+        """Keyword-based mock response used as fallback when LLM API is unavailable."""
+        msg_lower = user_message.lower()
+
+        if any(word in msg_lower for word in ["buy", "purchase"]):
+            ticker = self._extract_ticker(user_message) or "AAPL"
+            return {
+                "message": f"I'll buy 10 shares of {ticker} at the current price for you.",
+                "trades": [{"ticker": ticker, "side": "buy", "quantity": 10}],
+                "watchlist_changes": [],
+            }
+
+        if any(word in msg_lower for word in ["sell", "exit"]):
+            ticker = self._extract_ticker(user_message) or "AAPL"
+            return {
+                "message": f"Selling 5 shares of {ticker} at the current price.",
+                "trades": [{"ticker": ticker, "side": "sell", "quantity": 5}],
+                "watchlist_changes": [],
+            }
+
+        if any(word in msg_lower for word in ["add", "watch"]):
+            ticker = self._extract_ticker(user_message) or "MSFT"
+            return {
+                "message": f"I've added {ticker} to your watchlist so we can monitor it.",
+                "trades": [],
+                "watchlist_changes": [{"ticker": ticker, "action": "add"}],
+            }
+
+        portfolio_value = context["portfolio"]["total_value"]
+        cash = context["portfolio"]["cash_balance"]
+        num_positions = len(context["portfolio"]["positions"])
+        return {
+            "message": (
+                f"Your portfolio is currently valued at ${portfolio_value:,.2f} "
+                f"with ${cash:,.2f} in cash. You have {num_positions} position(s). "
+                "How can I help you today?"
+            ),
+            "trades": [],
+            "watchlist_changes": [],
+        }
+
+    def _parse_llm_response(self, content: str) -> dict:
+        """Parse LLM response JSON, handling malformed output gracefully.
+
+        Returns a dict with at least {"message": "...", "trades": [], "watchlist_changes": []}.
+        """
+        try:
+            parsed = json.loads(content)
+            # Ensure required keys exist with defaults
+            return {
+                "message": parsed.get("message", "I processed your request."),
+                "trades": parsed.get("trades", []),
+                "watchlist_changes": parsed.get("watchlist_changes", []),
+            }
+        except json.JSONDecodeError:
+            logger.warning("LLM returned malformed JSON, attempting partial extraction")
+            # Try to extract "message" field from partial JSON
+            match = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            if match:
+                msg = match.group(1)
+            else:
+                msg = "I encountered an issue processing your request. Please try again."
+                logger.error("Could not extract message from malformed LLM response")
+            return {"message": msg, "trades": [], "watchlist_changes": []}
+
     async def _call_llm(self, user_message: str, context: dict) -> dict:
-        """Call the actual LLM via LiteLLM + OpenRouter."""
-        # Import litellm here
+        """Call the LLM via LiteLLM + OpenRouter.
+
+        Falls back to keyword-based mock if API key is not configured.
+        Raises RuntimeError if the API call fails after key is configured.
+        """
         try:
             from litellm import completion
         except ImportError:
-            # Fallback to mock if litellm not installed
-            print("LiteLLM not installed, using mock response")
-            return await self._mock_llm_response(user_message, context)
+            logger.warning("LiteLLM not installed, using keyword mock response")
+            return self._keyword_mock_response(user_message, context)
 
         api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
         if not api_key:
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+            logger.debug("OPENROUTER_API_KEY not set, using keyword mock response")
+            return self._keyword_mock_response(user_message, context)
 
-        # Build system prompt
-        system_prompt = """You are FinAlly, an AI trading assistant. You help users manage their simulated stock portfolio.
+        portfolio_context = self._build_portfolio_context_string(context)
 
-Key capabilities:
-- Analyze portfolio composition and P&L
-- Execute trades when requested (buy/sell)
-- Add/remove tickers from the watchlist
-- Provide data-driven insights
+        system_prompt = (
+            "You are FinAlly, an AI trading assistant for a simulated trading workstation.\n\n"
+            "Your capabilities:\n"
+            "- Analyze portfolio composition, risk concentration, and P&L\n"
+            "- Suggest trades with clear reasoning\n"
+            "- Execute trades when the user asks or agrees (add them to the 'trades' list)\n"
+            "- Manage the watchlist proactively (add/remove via 'watchlist_changes')\n"
+            "- Be concise and data-driven in your responses\n\n"
+            "Current portfolio state:\n"
+            f"{portfolio_context}\n\n"
+            "ALWAYS respond with valid JSON matching this exact schema:\n"
+            '{"message": "conversational response", '
+            '"trades": [{"ticker": "AAPL", "side": "buy", "quantity": 10}], '
+            '"watchlist_changes": [{"ticker": "PYPL", "action": "add"}]}\n\n'
+            "Use empty arrays [] for trades or watchlist_changes when none are needed."
+        )
 
-Trade rules:
-- Only trade if the user asks or agrees
-- Validate sufficient cash for buys
-- Validate sufficient shares for sells
-- Always use the current market price
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
 
-Respond with valid JSON matching this schema:
-{
-  "message": "Your conversational response",
-  "trades": [{"ticker": "TICKER", "side": "buy/sell", "quantity": N}],
-  "watchlist_changes": [{"ticker": "TICKER", "action": "add/remove"}]
-}
-
-If no trades or watchlist changes are needed, omit those keys or use empty arrays."""
-
-        # Build messages array
-        messages = [{"role": "system", "content": system_prompt}]
-
-        # Add conversation history
-        for msg in context["history"][-10:]:  # Last 10 messages
+        # Add full conversation history
+        for msg in context["history"]:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # Add current context
-        context_msg = f"""Current portfolio state:
-- Cash: ${context["portfolio"]["cash_balance"]:,.2f}
-- Total Value: ${context["portfolio"]["total_value"]:,.2f}
-- Positions: {len(context["portfolio"]["positions"])} tickers
-- Unrealized P&L: ${context["portfolio"]["total_unrealized_pl"]:,.2f}
+        messages.append({"role": "user", "content": user_message})
 
-Watchlist: {', '.join([w["ticker"] for w in context["watchlist"]])}
-
-User message: {user_message}"""
-
-        messages.append({"role": "user", "content": context_msg})
-
-        # Call LLM via OpenRouter.
-        # "openrouter/" prefix tells LiteLLM to use the OpenRouter gateway.
-        # ":free" suffix selects the free tier of this model.
         try:
             response = completion(
                 model="openrouter/meta-llama/llama-3.3-70b-instruct",
                 messages=messages,
                 api_key=api_key,
-                base_url="https://openrouter.ai/api/v1",
+                api_base="https://openrouter.ai/api/v1",
                 temperature=0.7,
                 response_format={"type": "json_object"},
             )
-            return json.loads(response.choices[0].message.content)
+            content = response.choices[0].message.content
+            return self._parse_llm_response(content)
         except Exception as e:
-            # Fallback to mock on error
-            print(f"LLM call failed: {e}, using mock response")
-            return await self._mock_llm_response(user_message, context)
+            logger.error(f"LLM API call failed: {e}")
+            raise RuntimeError("Failed to process chat message") from e
 
     async def _execute_actions(self, llm_response: dict, user_id: str) -> ExecutedActions | None:
         """Execute trades and watchlist changes specified by the LLM."""
-        trades = []
-        watchlist_changes = []
-
-        # Import services
         from app.portfolio.service import PortfolioService
         from app.watchlist.service import WatchlistService
 
         portfolio_service = PortfolioService(self._cache)
         watchlist_service = WatchlistService(self._cache)
 
-        # Execute trades
+        trades: list[ExecutedTrade] = []
+        watchlist_changes: list[WatchlistChange] = []
+
         for trade_spec in llm_response.get("trades", []):
             try:
                 executed_trade, _ = portfolio_service.execute_trade(
@@ -297,45 +340,31 @@ User message: {user_message}"""
                     )
                 )
             except Exception as e:
-                # Log error but continue with other actions
-                print(f"Trade execution failed: {e}")
+                logger.warning(f"Trade execution failed for {trade_spec}: {e}")
 
-        # Execute watchlist changes
         for change_spec in llm_response.get("watchlist_changes", []):
             try:
                 ticker = change_spec["ticker"]
-                if change_spec["action"] == "add":
+                action = change_spec["action"]
+                now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                if action == "add":
                     await watchlist_service.add_ticker(ticker, user_id)
                     watchlist_changes.append(
-                        WatchlistChange(
-                            ticker=ticker,
-                            action="added",
-                            timestamp=datetime.utcnow().isoformat() + "Z",
-                        )
+                        WatchlistChange(ticker=ticker, action="added", timestamp=now)
                     )
-                elif change_spec["action"] == "remove":
+                elif action == "remove":
                     await watchlist_service.remove_ticker(ticker, user_id)
                     watchlist_changes.append(
-                        WatchlistChange(
-                            ticker=ticker,
-                            action="removed",
-                            timestamp=datetime.utcnow().isoformat() + "Z",
-                        )
+                        WatchlistChange(ticker=ticker, action="removed", timestamp=now)
                     )
             except Exception as e:
-                # Log error but continue
-                print(f"Watchlist change failed: {e}")
+                logger.warning(f"Watchlist change failed for {change_spec}: {e}")
 
         if trades or watchlist_changes:
-            return ExecutedActions(
-                trades=trades,
-                watchlist_changes=watchlist_changes,
-            )
+            return ExecutedActions(trades=trades, watchlist_changes=watchlist_changes)
         return None
 
     def _extract_ticker(self, text: str) -> str | None:
-        """Extract a ticker symbol from text."""
-        # Look for 1-5 uppercase letters
-        import re
+        """Extract a ticker symbol from text (1-5 uppercase letters)."""
         match = re.search(r"\b[A-Z]{1,5}\b", text)
         return match.group(0) if match else None

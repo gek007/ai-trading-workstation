@@ -4,11 +4,10 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useRef,
   useState,
 } from "react";
 import * as api from "@/lib/api";
-import { useSSE } from "@/hooks/useSSE";
+import { useSSEPrices } from "@/hooks/useSSEPrices";
 import type {
   ChatMessage,
   ConnectionStatus,
@@ -17,6 +16,7 @@ import type {
   PricePoint,
   PriceUpdate,
   TradeRequest,
+  TradeResponse,
   WatchlistItem,
 } from "@/lib/types";
 
@@ -29,9 +29,14 @@ interface ChatEntry {
 }
 
 interface AppContextType {
-  // Market
+  // Market data
   prices: Map<string, PriceUpdate>;
+  /** Per-ticker price history for the main chart (up to 500 points) */
   history: Map<string, PricePoint[]>;
+  /** Per-ticker price history for sparklines (up to 100 points) */
+  sparklineHistory: Map<string, PricePoint[]>;
+  /** Active flash directions per ticker, cleared after 500ms */
+  flashMap: Map<string, "up" | "down">;
   connectionStatus: ConnectionStatus;
   // Watchlist
   watchlist: WatchlistItem[];
@@ -40,7 +45,7 @@ interface AppContextType {
   // Portfolio
   portfolio: PortfolioResponse | null;
   refreshPortfolio: () => Promise<void>;
-  executeTrade: (req: TradeRequest) => Promise<void>;
+  executeTrade: (req: TradeRequest) => Promise<TradeResponse>;
   // UI
   selectedTicker: string | null;
   setSelectedTicker: (t: string | null) => void;
@@ -50,10 +55,13 @@ interface AppContextType {
   sendMessage: (msg: string) => Promise<void>;
 }
 
+// Re-export ChatEntry so consumers can type it
+export type { ChatEntry, ChatMessage };
+
 const AppContext = createContext<AppContextType | null>(null);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const { prices, history, connectionStatus } = useSSE();
+  const { prices, sparklineHistory, chartHistory, connectionStatus, flashMap } = useSSEPrices();
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null);
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
@@ -78,7 +86,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     refreshPortfolio();
     refreshWatchlist();
@@ -130,57 +137,65 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setWatchlist(res.watchlist.tickers);
   }, []);
 
-  const executeTrade = useCallback(async (req: TradeRequest) => {
+  const executeTrade = useCallback(async (req: TradeRequest): Promise<TradeResponse> => {
     const res = await api.executeTrade(req);
     setPortfolio(res.portfolio);
+    return res;
   }, []);
 
-  const sendMessage = useCallback(async (msg: string) => {
-    const userEntry: ChatEntry = {
-      id: Date.now().toString(),
-      role: "user",
-      content: msg,
-      created_at: new Date().toISOString(),
-    };
-    setChatMessages((prev) => [...prev, userEntry]);
-    setChatLoading(true);
-    try {
-      const res = await api.sendChatMessage(msg);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: res.message.id,
-          role: "assistant",
-          content: res.message.content,
-          executed_actions: res.executed_actions,
-          created_at: res.message.created_at,
-        },
-      ]);
-      // Refresh portfolio + watchlist if the LLM executed actions
-      if (res.executed_actions) {
-        await Promise.all([refreshPortfolio(), refreshWatchlist()]);
+  const sendMessage = useCallback(
+    async (msg: string) => {
+      const userEntry: ChatEntry = {
+        id: Date.now().toString(),
+        role: "user",
+        content: msg,
+        created_at: new Date().toISOString(),
+      };
+      setChatMessages((prev) => [...prev, userEntry]);
+      setChatLoading(true);
+      try {
+        const res = await api.sendChatMessage(msg);
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: res.message.id,
+            role: "assistant",
+            content: res.message.content,
+            executed_actions: res.executed_actions,
+            created_at: res.message.created_at,
+          },
+        ]);
+        if (res.executed_actions) {
+          await Promise.all([refreshPortfolio(), refreshWatchlist()]);
+        }
+      } catch (e: unknown) {
+        const detail =
+          (e as { error?: { message?: string } })?.error?.message ??
+          (e as { detail?: string })?.detail ??
+          "Failed to send message";
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: `Error: ${detail}`,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+      } finally {
+        setChatLoading(false);
       }
-    } catch (e: unknown) {
-      const detail = (e as { detail?: string })?.detail ?? "Failed to send message";
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          role: "assistant",
-          content: `Error: ${detail}`,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setChatLoading(false);
-    }
-  }, [refreshPortfolio, refreshWatchlist]);
+    },
+    [refreshPortfolio, refreshWatchlist]
+  );
 
   return (
     <AppContext.Provider
       value={{
         prices,
-        history,
+        history: chartHistory,
+        sparklineHistory,
+        flashMap,
         connectionStatus,
         watchlist,
         addTicker,

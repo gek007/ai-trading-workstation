@@ -15,10 +15,10 @@ class TestPriceCache:
         assert cache.get("AAPL") == update
 
     def test_first_update_is_flat(self):
-        """Test that the first update has flat direction."""
+        """Test that the first update has unchanged direction."""
         cache = PriceCache()
         update = cache.update("AAPL", 190.50)
-        assert update.direction == "flat"
+        assert update.direction == "unchanged"
         assert update.previous_price == 190.50
 
     def test_direction_up(self):
